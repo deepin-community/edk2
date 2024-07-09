@@ -126,7 +126,57 @@ SaveCpuMpData (
   IN CPU_MP_DATA  *CpuMpData
   )
 {
-  UINT64  Data64;
+  UINT32              MaxCpusPerHob;
+  UINT32              CpusInHob;
+  UINT64              Data64;
+  UINT32              Index;
+  UINT32              HobBase;
+  CPU_INFO_IN_HOB     *CpuInfoInHob;
+  MP_HAND_OFF         *MpHandOff;
+  MP_HAND_OFF_CONFIG  MpHandOffConfig;
+  UINTN               MpHandOffSize;
+
+  MaxCpusPerHob = (0xFFF8 - sizeof (EFI_HOB_GUID_TYPE) - sizeof (MP_HAND_OFF)) / sizeof (PROCESSOR_HAND_OFF);
+
+  //
+  // When APs are in a state that can be waken up by a store operation to a memory address,
+  // report the MP_HAND_OFF data for DXE to use.
+  //
+  CpuInfoInHob = (CPU_INFO_IN_HOB *)(UINTN)CpuMpData->CpuInfoInHob;
+
+  for (Index = 0; Index < CpuMpData->CpuCount; Index++) {
+    if (Index % MaxCpusPerHob == 0) {
+      HobBase   = Index;
+      CpusInHob = MIN (CpuMpData->CpuCount - HobBase, MaxCpusPerHob);
+
+      MpHandOffSize = sizeof (MP_HAND_OFF) + sizeof (PROCESSOR_HAND_OFF) * CpusInHob;
+      MpHandOff     = (MP_HAND_OFF *)BuildGuidHob (&mMpHandOffGuid, MpHandOffSize);
+      ASSERT (MpHandOff != NULL);
+      ZeroMem (MpHandOff, MpHandOffSize);
+
+      MpHandOff->ProcessorIndex = HobBase;
+      MpHandOff->CpuCount       = CpusInHob;
+    }
+
+    MpHandOff->Info[Index-HobBase].ApicId = CpuInfoInHob[Index].ApicId;
+    MpHandOff->Info[Index-HobBase].Health = CpuInfoInHob[Index].Health;
+    if (CpuMpData->ApLoopMode != ApInHltLoop) {
+      MpHandOff->Info[Index-HobBase].StartupSignalAddress    = (UINT64)(UINTN)CpuMpData->CpuData[Index].StartupApSignal;
+      MpHandOff->Info[Index-HobBase].StartupProcedureAddress = (UINT64)(UINTN)&CpuMpData->CpuData[Index].ApFunction;
+    }
+  }
+
+  ZeroMem (&MpHandOffConfig, sizeof (MpHandOffConfig));
+  if (CpuMpData->ApLoopMode != ApInHltLoop) {
+    MpHandOffConfig.StartupSignalValue    = MP_HAND_OFF_SIGNAL;
+    MpHandOffConfig.WaitLoopExecutionMode = sizeof (VOID *);
+  }
+
+  BuildGuidDataHob (
+    &mMpHandOffConfigGuid,
+    (VOID *)&MpHandOffConfig,
+    sizeof (MpHandOffConfig)
+    );
 
   //
   // Build location of CPU MP DATA buffer in HOB
@@ -758,7 +808,7 @@ PlatformShadowMicrocode (
   DEBUG ((
     DEBUG_INFO,
     "%a: Required microcode patches have been loaded at 0x%lx, with size 0x%lx.\n",
-    __FUNCTION__,
+    __func__,
     CpuMpData->MicrocodePatchAddress,
     CpuMpData->MicrocodePatchRegionSize
     ));

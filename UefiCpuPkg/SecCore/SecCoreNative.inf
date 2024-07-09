@@ -13,7 +13,7 @@
 ##
 
 [Defines]
-  INF_VERSION                    = 0x00010005
+  INF_VERSION                    = 1.30
   BASE_NAME                      = SecCoreNative
   MODULE_UNI_FILE                = SecCore.uni
   FILE_GUID                      = 43CA74CA-7D29-49A0-B3B9-20F84015B27D
@@ -45,7 +45,6 @@
   PcdLib
   DebugAgentLib
   CpuLib
-  UefiCpuLib
   PeCoffGetEntryPointLib
   PeCoffExtraActionLib
   CpuExceptionHandlerLib
@@ -53,6 +52,7 @@
   PeiServicesLib
   PeiServicesTablePointerLib
   HobLib
+  CpuPageTableLib
 
 [Ppis]
   ## SOMETIMES_CONSUMES

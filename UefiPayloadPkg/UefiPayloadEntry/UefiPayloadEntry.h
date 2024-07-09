@@ -24,7 +24,6 @@
 #include <Library/BlParseLib.h>
 #include <Library/PlatformSupportLib.h>
 #include <Library/CpuLib.h>
-#include <Library/UefiCpuLib.h>
 #include <IndustryStandard/Acpi.h>
 #include <IndustryStandard/MemoryMappedConfigurationSpaceAccessTable.h>
 #include <Guid/SerialPortInfoGuid.h>
@@ -51,16 +50,6 @@
 #define E820_DISABLED   6
 #define E820_PMEM       7
 #define E820_UNDEFINED  8
-
-/**
-  Auto-generated function that calls the library constructors for all of the module's
-  dependent libraries.
-**/
-VOID
-EFIAPI
-ProcessLibraryConstructorList (
-  VOID
-  );
 
 /**
   Add a new HOB to the HOB List.

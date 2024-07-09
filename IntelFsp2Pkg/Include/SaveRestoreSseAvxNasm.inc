@@ -202,6 +202,27 @@
             %endmacro
 
 ;
+; Save TemporaryRamSize to YMM10[192:255]
+; arg 1:general purpose register which holds TemporaryRamSize
+; Modified: XMM5 and YMM10[192:255]
+;
+%macro SAVE_TEMPORARY_RAM_SIZE     1
+            LYMMN   ymm10, xmm5, 1
+            SXMMN   xmm5, 1, %1
+            SYMMN   ymm10, 1, xmm5
+            %endmacro
+
+;
+; Restore TemporaryRamSize from YMM10[192:255]
+; arg 1:general purpose register where to save TemporaryRamSize
+; Modified: XMM5 and %1
+;
+%macro LOAD_TEMPORARY_RAM_SIZE     1
+            LYMMN   ymm10, xmm5, 1
+            LXMMN   xmm5, %1, 1
+            %endmacro
+
+;
 ; YMM7[128:191] for calling stack
 ; arg 1:Entry
 ; Modified: RSI, XMM5, YMM7
@@ -255,6 +276,10 @@ NextAddress:
             ; Use CpuId instruction (CPUID.01H:EDX.SSE[bit 25] = 1) to test
             ; whether the processor supports SSE instruction.
             ;
+            ; Save RBX to R11
+            ; Save RCX to R10
+            ;
+            mov     r11, rbx
             mov     r10, rcx
             mov     rax, 1
             cpuid
@@ -266,7 +291,12 @@ NextAddress:
             ;
             bt      ecx, 19
             jnc     SseError
-            mov     rcx,  r10
+            ;
+            ; Restore RBX from R11
+            ; Restore RCX from R10
+            ;
+            mov     rbx, r11
+            mov     rcx, r10
 
             ;
             ; Set OSFXSR bit (bit #9) & OSXMMEXCPT bit (bit #10)
@@ -284,6 +314,11 @@ NextAddress:
             %endmacro
 
 %macro ENABLE_AVX   0
+            ;
+            ; Save RBX to R11
+            ; Save RCX to R10
+            ;
+            mov     r11, rbx
             mov     r10, rcx
             mov     eax, 1
             cpuid
@@ -307,6 +342,11 @@ EnableAvx:
             xgetbv                 ; result in edx:eax
             or      eax, 00000006h ; Set XCR0 bit #1 and bit #2 to enable SSE state and AVX state
             xsetbv
+            ;
+            ; Restore RBX from R11
+            ; Restore RCX from R10
+            ;
+            mov     rbx, r11
             mov     rcx, r10
             %endmacro
 

@@ -3,7 +3,7 @@
 #
 # Provides drivers and definitions to create uefi payload for bootloaders.
 #
-# Copyright (c) 2014 - 2022, Intel Corporation. All rights reserved.<BR>
+# Copyright (c) 2014 - 2023, Intel Corporation. All rights reserved.<BR>
 # Copyright (c) Microsoft Corporation.
 # SPDX-License-Identifier: BSD-2-Clause-Patent
 #
@@ -22,7 +22,7 @@
   SUPPORTED_ARCHITECTURES             = IA32|X64
   BUILD_TARGETS                       = DEBUG|RELEASE|NOOPT
   SKUID_IDENTIFIER                    = DEFAULT
-  OUTPUT_DIRECTORY                    = Build/UefiPayloadPkgX64
+  OUTPUT_DIRECTORY                    = Build/UefiPayloadPkg$(BUILD_ARCH)
   FLASH_DEFINITION                    = UefiPayloadPkg/UefiPayloadPkg.fdf
   PCD_DYNAMIC_AS_DYNAMICEX            = TRUE
 
@@ -30,20 +30,33 @@
   DEFINE PS2_KEYBOARD_ENABLE          = FALSE
   DEFINE RAM_DISK_ENABLE              = FALSE
   DEFINE SIO_BUS_ENABLE               = FALSE
-  DEFINE UNIVERSAL_PAYLOAD            = FALSE
   DEFINE SECURITY_STUB_ENABLE         = TRUE
   DEFINE SMM_SUPPORT                  = FALSE
   DEFINE PLATFORM_BOOT_TIMEOUT        = 3
-  DEFINE ABOVE_4G_MEMORY              = TRUE
   DEFINE BOOT_MANAGER_ESCAPE          = FALSE
   DEFINE ATA_ENABLE                   = TRUE
   DEFINE SD_ENABLE                    = TRUE
   DEFINE PS2_MOUSE_ENABLE             = TRUE
-  DEFINE CRYPTO_PROTOCOL_SUPPORT      = FALSE
   DEFINE SD_MMC_TIMEOUT               = 1000000
   DEFINE USE_CBMEM_FOR_CONSOLE        = FALSE
   DEFINE BOOTSPLASH_IMAGE             = FALSE
   DEFINE NVME_ENABLE                  = TRUE
+  DEFINE CAPSULE_SUPPORT              = FALSE
+
+  #
+  # Crypto Support
+  #
+  DEFINE CRYPTO_PROTOCOL_SUPPORT        = FALSE
+  DEFINE CRYPTO_DRIVER_EXTERNAL_SUPPORT = FALSE
+
+  #
+  # Setup Universal Payload
+  #
+  # ELF: Build UniversalPayload file as UniversalPayload.elf
+  # FIT: Build UniversalPayload file as UniversalPayload.fit
+  #
+  DEFINE UNIVERSAL_PAYLOAD            = FALSE
+  DEFINE UNIVERSAL_PAYLOAD_FORMAT     = ELF
 
   #
   # NULL:    NullMemoryTestDxe
@@ -59,7 +72,7 @@
   #
   # CPU options
   #
-  DEFINE MAX_LOGICAL_PROCESSORS       = 256
+  DEFINE MAX_LOGICAL_PROCESSORS       = 1024
 
   #
   # PCI options
@@ -131,6 +144,12 @@
   # This is how BaseCpuTimerLib works, and a recommended way to get Frequence, so set the default value as TRUE.
   # Note: for emulation platform such as QEMU, this may not work and should set it as FALSE
   DEFINE CPU_TIMER_LIB_ENABLE  = TRUE
+
+  #
+  # HPET:  UEFI Payload will use HPET timer
+  # LAPIC: UEFI Payload will use local APIC timer
+  #
+  DEFINE TIMER_SUPPORT      = HPET
 
   DEFINE MULTIPLE_DEBUG_PORT_SUPPORT = FALSE
 
@@ -221,7 +240,6 @@
   UefiDecompressLib|MdePkg/Library/BaseUefiDecompressLib/BaseUefiDecompressLib.inf
   DxeServicesLib|MdePkg/Library/DxeServicesLib/DxeServicesLib.inf
   DxeServicesTableLib|MdePkg/Library/DxeServicesTableLib/DxeServicesTableLib.inf
-  UefiCpuLib|UefiCpuPkg/Library/BaseUefiCpuLib/BaseUefiCpuLib.inf
   SortLib|MdeModulePkg/Library/UefiSortLib/UefiSortLib.inf
 
   #
@@ -230,35 +248,27 @@
   UefiUsbLib|MdePkg/Library/UefiUsbLib/UefiUsbLib.inf
   UefiScsiLib|MdePkg/Library/UefiScsiLib/UefiScsiLib.inf
   OemHookStatusCodeLib|MdeModulePkg/Library/OemHookStatusCodeLibNull/OemHookStatusCodeLibNull.inf
+  !if $(CAPSULE_SUPPORT) == TRUE
   CapsuleLib|MdeModulePkg/Library/DxeCapsuleLibFmp/DxeRuntimeCapsuleLib.inf
   BmpSupportLib|MdeModulePkg/Library/BaseBmpSupportLib/BaseBmpSupportLib.inf
+  !else
+  CapsuleLib|MdeModulePkg/Library/DxeCapsuleLibNull/DxeCapsuleLibNull.inf
+  !endif
   SecurityManagementLib|MdeModulePkg/Library/DxeSecurityManagementLib/DxeSecurityManagementLib.inf
   UefiBootManagerLib|MdeModulePkg/Library/UefiBootManagerLib/UefiBootManagerLib.inf
   BootLogoLib|MdeModulePkg/Library/BootLogoLib/BootLogoLib.inf
   CustomizedDisplayLib|MdeModulePkg/Library/CustomizedDisplayLib/CustomizedDisplayLib.inf
   FrameBufferBltLib|MdeModulePkg/Library/FrameBufferBltLib/FrameBufferBltLib.inf
-
-  #
-  # CPU
-  #
-  MtrrLib|UefiCpuPkg/Library/MtrrLib/MtrrLib.inf
-  LocalApicLib|UefiCpuPkg/Library/BaseXApicX2ApicLib/BaseXApicX2ApicLib.inf
-  MicrocodeLib|UefiCpuPkg/Library/MicrocodeLib/MicrocodeLib.inf
-
-  #
-  # Platform
-  #
-!if $(CPU_TIMER_LIB_ENABLE) == TRUE && $(UNIVERSAL_PAYLOAD) == TRUE
-  TimerLib|UefiCpuPkg/Library/CpuTimerLib/BaseCpuTimerLib.inf
-!else
-  TimerLib|UefiPayloadPkg/Library/AcpiTimerLib/AcpiTimerLib.inf
-!endif
   ResetSystemLib|UefiPayloadPkg/Library/ResetSystemLib/ResetSystemLib.inf
 !if $(USE_CBMEM_FOR_CONSOLE) == TRUE
   SerialPortLib|UefiPayloadPkg/Library/CbSerialPortLib/CbSerialPortLib.inf
   PlatformHookLib|MdeModulePkg/Library/BasePlatformHookLibNull/BasePlatformHookLibNull.inf
 !else
-  SerialPortLib|MdeModulePkg/Library/BaseSerialPortLib16550/BaseSerialPortLib16550.inf
+  !if $(MULTIPLE_DEBUG_PORT_SUPPORT) == TRUE
+    SerialPortLib|UefiPayloadPkg/Library/BaseSerialPortLibHob/DxeBaseSerialPortLibHob.inf
+  !else
+    SerialPortLib|MdeModulePkg/Library/BaseSerialPortLib16550/BaseSerialPortLib16550.inf
+  !endif
   PlatformHookLib|UefiPayloadPkg/Library/PlatformHookLib/PlatformHookLib.inf
 !endif
   PlatformBootManagerLib|UefiPayloadPkg/Library/PlatformBootManagerLib/PlatformBootManagerLib.inf
@@ -269,6 +279,7 @@
   #
   DebugPrintErrorLevelLib|UefiPayloadPkg/Library/DebugPrintErrorLevelLibHob/DebugPrintErrorLevelLibHob.inf
   PerformanceLib|MdePkg/Library/BasePerformanceLibNull/BasePerformanceLibNull.inf
+  ImagePropertiesRecordLib|MdeModulePkg/Library/ImagePropertiesRecordLib/ImagePropertiesRecordLib.inf
 !if $(SOURCE_DEBUG_ENABLE) == TRUE
   PeCoffExtraActionLib|SourceLevelDebugPkg/Library/PeCoffExtraActionLibDebug/PeCoffExtraActionLibDebug.inf
   DebugCommunicationLib|SourceLevelDebugPkg/Library/DebugCommunicationLibSerialPort/DebugCommunicationLibSerialPort.inf
@@ -302,7 +313,10 @@
   VariablePolicyHelperLib|MdeModulePkg/Library/VariablePolicyHelperLib/VariablePolicyHelperLib.inf
   VariableFlashInfoLib|MdeModulePkg/Library/BaseVariableFlashInfoLib/BaseVariableFlashInfoLib.inf
   CcExitLib|UefiCpuPkg/Library/CcExitLibNull/CcExitLibNull.inf
+  AmdSvsmLib|UefiCpuPkg/Library/AmdSvsmLibNull/AmdSvsmLibNull.inf
   ReportStatusCodeLib|MdeModulePkg/Library/DxeReportStatusCodeLib/DxeReportStatusCodeLib.inf
+  FdtLib|MdePkg/Library/BaseFdtLib/BaseFdtLib.inf
+  SmmRelocationLib|UefiCpuPkg/Library/SmmRelocationLib/SmmRelocationLib.inf
 
 [LibraryClasses.common]
 !if $(BOOTSPLASH_IMAGE)
@@ -310,11 +324,30 @@
   BmpSupportLib|MdeModulePkg/Library/BaseBmpSupportLib/BaseBmpSupportLib.inf
 !endif
 
+[LibraryClasses.X64]
+  #
+  # CPU
+  #
+  MtrrLib|UefiCpuPkg/Library/MtrrLib/MtrrLib.inf
+  LocalApicLib|UefiCpuPkg/Library/BaseXApicX2ApicLib/BaseXApicX2ApicLib.inf
+  MicrocodeLib|UefiCpuPkg/Library/MicrocodeLib/MicrocodeLib.inf
+  IoApicLib|PcAtChipsetPkg/Library/BaseIoApicLib/BaseIoApicLib.inf
+!if $(CPU_TIMER_LIB_ENABLE) == TRUE && $(UNIVERSAL_PAYLOAD) == TRUE
+  TimerLib|UefiCpuPkg/Library/CpuTimerLib/BaseCpuTimerLib.inf
+!else
+  TimerLib|UefiPayloadPkg/Library/AcpiTimerLib/AcpiTimerLib.inf
+!endif
+  CpuExceptionHandlerLib|UefiCpuPkg/Library/CpuExceptionHandlerLib/DxeCpuExceptionHandlerLib.inf
+  CpuPageTableLib|UefiCpuPkg/Library/CpuPageTableLib/CpuPageTableLib.inf
+
 [LibraryClasses.common.SEC]
   HobLib|UefiPayloadPkg/Library/PayloadEntryHobLib/HobLib.inf
   PcdLib|MdePkg/Library/BasePcdLibNull/BasePcdLibNull.inf
   DxeHobListLib|UefiPayloadPkg/Library/DxeHobListLibNull/DxeHobListLibNull.inf
   DebugLib|MdePkg/Library/BaseDebugLibSerialPort/BaseDebugLibSerialPort.inf
+!if $(MULTIPLE_DEBUG_PORT_SUPPORT) == TRUE
+  SerialPortLib|UefiPayloadPkg/Library/BaseSerialPortLibHob/BaseSerialPortLibHob.inf
+!endif
 
 [LibraryClasses.common.DXE_CORE]
   DxeHobListLib|UefiPayloadPkg/Library/DxeHobListLibNull/DxeHobListLibNull.inf
@@ -323,6 +356,8 @@
   MemoryAllocationLib|MdeModulePkg/Library/DxeCoreMemoryAllocationLib/DxeCoreMemoryAllocationLib.inf
   ExtractGuidedSectionLib|MdePkg/Library/DxeExtractGuidedSectionLib/DxeExtractGuidedSectionLib.inf
   ReportStatusCodeLib|MdeModulePkg/Library/DxeReportStatusCodeLib/DxeReportStatusCodeLib.inf
+
+[LibraryClasses.X64.DXE_CORE]
 !if $(SOURCE_DEBUG_ENABLE)
   DebugAgentLib|SourceLevelDebugPkg/Library/DebugAgent/DxeDebugAgentLib.inf
 !endif
@@ -336,6 +371,10 @@
   MemoryAllocationLib|MdePkg/Library/UefiMemoryAllocationLib/UefiMemoryAllocationLib.inf
   ExtractGuidedSectionLib|MdePkg/Library/DxeExtractGuidedSectionLib/DxeExtractGuidedSectionLib.inf
   ReportStatusCodeLib|MdeModulePkg/Library/DxeReportStatusCodeLib/DxeReportStatusCodeLib.inf
+
+[LibraryClasses.X64.DXE_DRIVER]
+  CpuExceptionHandlerLib|UefiCpuPkg/Library/CpuExceptionHandlerLib/DxeCpuExceptionHandlerLib.inf
+  MpInitLib|UefiCpuPkg/Library/MpInitLib/DxeMpInitLib.inf
 !if $(SOURCE_DEBUG_ENABLE)
   DebugAgentLib|SourceLevelDebugPkg/Library/DebugAgent/DxeDebugAgentLib.inf
 !endif
@@ -362,7 +401,7 @@
   PerformanceLib|MdeModulePkg/Library/DxePerformanceLib/DxePerformanceLib.inf
 !endif
 
-[LibraryClasses.common.SMM_CORE]
+[LibraryClasses.X64.SMM_CORE]
 !if $(SMM_SUPPORT) == TRUE
   PcdLib|MdePkg/Library/DxePcdLib/DxePcdLib.inf
   SmmServicesTableLib|MdeModulePkg/Library/PiSmmCoreSmmServicesTableLib/PiSmmCoreSmmServicesTableLib.inf
@@ -376,7 +415,7 @@
 !endif
 !endif
 
-[LibraryClasses.common.DXE_SMM_DRIVER]
+[LibraryClasses.X64.DXE_SMM_DRIVER]
 !if $(SMM_SUPPORT) == TRUE
   PcdLib|MdePkg/Library/DxePcdLib/DxePcdLib.inf
 
@@ -406,13 +445,15 @@
 #
 ################################################################################
 [PcdsFeatureFlag]
-  gEfiMdeModulePkgTokenSpaceGuid.PcdDxeIplSwitchToLongMode|TRUE
   gEfiMdeModulePkgTokenSpaceGuid.PcdConOutGopSupport|TRUE
   gEfiMdeModulePkgTokenSpaceGuid.PcdConOutUgaSupport|FALSE
   ## This PCD specified whether ACPI SDT protocol is installed.
   gEfiMdeModulePkgTokenSpaceGuid.PcdInstallAcpiSdtProtocol|TRUE
   gEfiMdeModulePkgTokenSpaceGuid.PcdHiiOsRuntimeSupport|FALSE
   gEfiMdeModulePkgTokenSpaceGuid.PcdPciDegradeResourceForOptionRom|FALSE
+
+[PcdsFeatureFlag.X64]
+  gEfiMdeModulePkgTokenSpaceGuid.PcdDxeIplSwitchToLongMode|TRUE
   gUefiCpuPkgTokenSpaceGuid.PcdCpuSmmEnableBspElection|FALSE
 
 [PcdsFixedAtBuild]
@@ -430,6 +471,7 @@
   gEfiMdeModulePkgTokenSpaceGuid.PcdStatusCodeUseMemory|FALSE
   gEfiMdeModulePkgTokenSpaceGuid.PcdUse1GPageTable|TRUE
 
+  gEfiMdeModulePkgTokenSpaceGuid.PcdBootManagerMenuFile|{ 0x21, 0xaa, 0x2c, 0x46, 0x14, 0x76, 0x03, 0x45, 0x83, 0x6e, 0x8a, 0xb6, 0xf4, 0x66, 0x23, 0x31 }
   gUefiPayloadPkgTokenSpaceGuid.PcdPcdDriverFile|{ 0x57, 0x72, 0xcf, 0x80, 0xab, 0x87, 0xf9, 0x47, 0xa3, 0xfe, 0xD5, 0x0B, 0x76, 0xd8, 0x95, 0x41 }
 
 !if $(SOURCE_DEBUG_ENABLE)
@@ -442,12 +484,12 @@
 !endif
   gEfiMdeModulePkgTokenSpaceGuid.PcdSdMmcGenericTimeoutValue|$(SD_MMC_TIMEOUT)
 
-  gUefiPayloadPkgTokenSpaceGuid.PcdDispatchModuleAbove4GMemory|$(ABOVE_4G_MEMORY)
   gUefiPayloadPkgTokenSpaceGuid.PcdBootManagerEscape|$(BOOT_MANAGER_ESCAPE)
 
   gEfiMdePkgTokenSpaceGuid.PcdMaximumUnicodeStringLength|1800000
 
 !if $(CRYPTO_PROTOCOL_SUPPORT) == TRUE
+!if $(CRYPTO_DRIVER_EXTERNAL_SUPPORT) == FALSE
   gEfiCryptoPkgTokenSpaceGuid.PcdCryptoServiceFamilyEnable.HmacSha256.Family                        | PCD_CRYPTO_SERVICE_ENABLE_FAMILY
   gEfiCryptoPkgTokenSpaceGuid.PcdCryptoServiceFamilyEnable.Md5.Family                               | PCD_CRYPTO_SERVICE_ENABLE_FAMILY
   gEfiCryptoPkgTokenSpaceGuid.PcdCryptoServiceFamilyEnable.Pkcs.Family                              | PCD_CRYPTO_SERVICE_ENABLE_FAMILY
@@ -469,10 +511,9 @@
   gEfiCryptoPkgTokenSpaceGuid.PcdCryptoServiceFamilyEnable.TlsSet.Family                            | PCD_CRYPTO_SERVICE_ENABLE_FAMILY
   gEfiCryptoPkgTokenSpaceGuid.PcdCryptoServiceFamilyEnable.TlsGet.Family                            | PCD_CRYPTO_SERVICE_ENABLE_FAMILY
 !endif
+!endif
 
 [PcdsPatchableInModule.X64]
-  gPcAtChipsetPkgTokenSpaceGuid.PcdRtcIndexRegister|$(RTC_INDEX_REGISTER)
-  gPcAtChipsetPkgTokenSpaceGuid.PcdRtcTargetRegister|$(RTC_TARGET_REGISTER)
 !if $(NETWORK_DRIVER_ENABLE) == TRUE
   gEfiNetworkPkgTokenSpaceGuid.PcdAllowHttpConnections|TRUE
 !endif
@@ -530,14 +571,14 @@
   gEfiMdePkgTokenSpaceGuid.PcdUartDefaultParity|$(UART_DEFAULT_PARITY)
   gEfiMdePkgTokenSpaceGuid.PcdUartDefaultStopBits|$(UART_DEFAULT_STOP_BITS)
   gEfiMdePkgTokenSpaceGuid.PcdDefaultTerminalType|$(DEFAULT_TERMINAL_TYPE)
-  gEfiMdeModulePkgTokenSpaceGuid.PcdAriSupport
-  gEfiMdeModulePkgTokenSpaceGuid.PcdMrIovSupport
-  gEfiMdeModulePkgTokenSpaceGuid.PcdSrIovSupport
-  gEfiMdeModulePkgTokenSpaceGuid.PcdSrIovSystemPageSize
-  gUefiCpuPkgTokenSpaceGuid.PcdCpuApInitTimeOutInMicroSeconds
-  gUefiCpuPkgTokenSpaceGuid.PcdCpuApLoopMode
-  gUefiCpuPkgTokenSpaceGuid.PcdCpuMicrocodePatchAddress
-  gUefiCpuPkgTokenSpaceGuid.PcdCpuMicrocodePatchRegionSize
+  gEfiMdeModulePkgTokenSpaceGuid.PcdAriSupport|TRUE
+  gEfiMdeModulePkgTokenSpaceGuid.PcdMrIovSupport|FALSE
+  gEfiMdeModulePkgTokenSpaceGuid.PcdSrIovSupport|TRUE
+  gEfiMdeModulePkgTokenSpaceGuid.PcdSrIovSystemPageSize|0x1
+  gUefiCpuPkgTokenSpaceGuid.PcdCpuApInitTimeOutInMicroSeconds|50000
+  gUefiCpuPkgTokenSpaceGuid.PcdCpuApLoopMode|1
+  gUefiCpuPkgTokenSpaceGuid.PcdCpuMicrocodePatchAddress|0x0
+  gUefiCpuPkgTokenSpaceGuid.PcdCpuMicrocodePatchRegionSize|0x0
 !if ($(TARGET) == DEBUG || $(USE_CBMEM_FOR_CONSOLE) == TRUE)
   gEfiMdeModulePkgTokenSpaceGuid.PcdStatusCodeUseSerial|TRUE
 !else
@@ -579,6 +620,9 @@
   gUefiCpuPkgTokenSpaceGuid.PcdSevEsIsEnabled|0
   gEfiMdeModulePkgTokenSpaceGuid.PcdPciDisableBusEnumeration|TRUE
 
+  gPcAtChipsetPkgTokenSpaceGuid.PcdRtcIndexRegister|$(RTC_INDEX_REGISTER)
+  gPcAtChipsetPkgTokenSpaceGuid.PcdRtcTargetRegister|$(RTC_TARGET_REGISTER)
+
 ################################################################################
 #
 # Components Section - list of all EDK II Modules needed by this Platform.
@@ -588,14 +632,26 @@
 !if "IA32" in "$(ARCH)"
   [Components.IA32]
   !if $(UNIVERSAL_PAYLOAD) == TRUE
-    UefiPayloadPkg/UefiPayloadEntry/UniversalPayloadEntry.inf
+    !if $(UNIVERSAL_PAYLOAD_FORMAT) == "ELF"
+      UefiPayloadPkg/UefiPayloadEntry/UniversalPayloadEntry.inf
+    !elseif $(UNIVERSAL_PAYLOAD_FORMAT) == "FIT"
+      UefiPayloadPkg/UefiPayloadEntry/FitUniversalPayloadEntry.inf
+    !else
+      UefiPayloadPkg/UefiPayloadEntry/UefiPayloadEntry.inf
+    !endif
   !else
     UefiPayloadPkg/UefiPayloadEntry/UefiPayloadEntry.inf
   !endif
 !else
   [Components.X64]
   !if $(UNIVERSAL_PAYLOAD) == TRUE
-    UefiPayloadPkg/UefiPayloadEntry/UniversalPayloadEntry.inf
+    !if $(UNIVERSAL_PAYLOAD_FORMAT) == "ELF"
+      UefiPayloadPkg/UefiPayloadEntry/UniversalPayloadEntry.inf
+    !elseif $(UNIVERSAL_PAYLOAD_FORMAT) == "FIT"
+      UefiPayloadPkg/UefiPayloadEntry/FitUniversalPayloadEntry.inf
+    !else
+      UefiPayloadPkg/UefiPayloadEntry/UefiPayloadEntry.inf
+    !endif
   !else
     UefiPayloadPkg/UefiPayloadEntry/UefiPayloadEntry.inf
   !endif
@@ -618,7 +674,7 @@
     <LibraryClasses>
       !if $(MULTIPLE_DEBUG_PORT_SUPPORT) == TRUE
         DebugLib|MdePkg/Library/BaseDebugLibSerialPort/BaseDebugLibSerialPort.inf
-        SerialPortLib|UefiPayloadPkg/Library/BaseSerialPortLibHob/BaseSerialPortLibHob.inf
+        SerialPortLib|UefiPayloadPkg/Library/BaseSerialPortLibHob/DxeBaseSerialPortLibHob.inf
       !endif
       NULL|MdeModulePkg/Library/LzmaCustomDecompressLib/LzmaCustomDecompressLib.inf
   }
@@ -640,11 +696,20 @@
       NULL|MdeModulePkg/Library/BootManagerUiLib/BootManagerUiLib.inf
       NULL|MdeModulePkg/Library/BootMaintenanceManagerUiLib/BootMaintenanceManagerUiLib.inf
   }
-  MdeModulePkg/Application/BootManagerMenuApp/BootManagerMenuApp.inf {
-    <LibraryClasses>
-      NULL|UefiPayloadPkg/Library/PlatformBootManagerLib/PlatformBootManagerLib.inf
-  }
+  MdeModulePkg/Application/BootManagerMenuApp/BootManagerMenuApp.inf
+
+
+!if $(TIMER_SUPPORT) == "HPET"
   PcAtChipsetPkg/HpetTimerDxe/HpetTimerDxe.inf
+!elseif $(TIMER_SUPPORT) == "LAPIC"
+  OvmfPkg/LocalApicTimerDxe/LocalApicTimerDxe.inf {
+    <LibraryClasses>
+      NestedInterruptTplLib|OvmfPkg/Library/NestedInterruptTplLib/NestedInterruptTplLib.inf
+  }
+!else
+  !error "Invalid TIMER_SUPPORT"
+!endif
+
   MdeModulePkg/Universal/Metronome/Metronome.inf
   MdeModulePkg/Universal/WatchdogTimerDxe/WatchdogTimer.inf
   MdeModulePkg/Core/RuntimeDxe/RuntimeDxe.inf
@@ -812,11 +877,13 @@
   # Misc
   #
 !if $(CRYPTO_PROTOCOL_SUPPORT) == TRUE
+!if $(CRYPTO_DRIVER_EXTERNAL_SUPPORT) == FALSE
   CryptoPkg/Driver/CryptoDxe.inf {
     <LibraryClasses>
       BaseCryptLib|CryptoPkg/Library/BaseCryptLib/BaseCryptLib.inf
       TlsLib|CryptoPkg/Library/TlsLib/TlsLib.inf
   }
+!endif
 !endif
 
   #------------------------------

@@ -12,6 +12,16 @@
 
 #include <IndustryStandard/Acpi63.h>
 
+///
+/// _PSD Revision for ACPI 6.4
+///
+#define EFI_ACPI_6_4_AML_PSD_REVISION  0
+
+///
+/// _CPC Revision for ACPI 6.4
+///
+#define EFI_ACPI_6_4_AML_CPC_REVISION  3
+
 //
 // Ensure proper structure formats
 //
@@ -2846,6 +2856,11 @@ typedef struct {
 /// "APIC" Multiple APIC Description Table
 ///
 #define EFI_ACPI_6_4_MULTIPLE_APIC_DESCRIPTION_TABLE_SIGNATURE  SIGNATURE_32('A', 'P', 'I', 'C')
+
+///
+/// "APMT" Arm Performance Monitoring Unit Table
+///
+#define EFI_ACPI_6_4_ARM_PERFORMANCE_MONITORING_UNIT_TABLE_SIGNATURE  SIGNATURE_32('A', 'P', 'M', 'T')
 
 ///
 /// "BERT" Boot Error Record Table

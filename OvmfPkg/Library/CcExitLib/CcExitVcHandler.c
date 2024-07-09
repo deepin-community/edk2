@@ -1,7 +1,7 @@
 /** @file
   X64 #VC Exception Handler functon.
 
-  Copyright (C) 2020, Advanced Micro Devices, Inc. All rights reserved.<BR>
+  Copyright (C) 2020 - 2024, Advanced Micro Devices, Inc. All rights reserved.<BR>
   SPDX-License-Identifier: BSD-2-Clause-Patent
 
 **/
@@ -12,112 +12,13 @@
 #include <Library/LocalApicLib.h>
 #include <Library/MemEncryptSevLib.h>
 #include <Library/CcExitLib.h>
+#include <Library/AmdSvsmLib.h>
 #include <Register/Amd/Msr.h>
 #include <Register/Intel/Cpuid.h>
 #include <IndustryStandard/InstructionParsing.h>
 
 #include "CcExitVcHandler.h"
-
-//
-// Instruction execution mode definition
-//
-typedef enum {
-  LongMode64Bit = 0,
-  LongModeCompat32Bit,
-  LongModeCompat16Bit,
-} SEV_ES_INSTRUCTION_MODE;
-
-//
-// Instruction size definition (for operand and address)
-//
-typedef enum {
-  Size8Bits = 0,
-  Size16Bits,
-  Size32Bits,
-  Size64Bits,
-} SEV_ES_INSTRUCTION_SIZE;
-
-//
-// Intruction segment definition
-//
-typedef enum {
-  SegmentEs = 0,
-  SegmentCs,
-  SegmentSs,
-  SegmentDs,
-  SegmentFs,
-  SegmentGs,
-} SEV_ES_INSTRUCTION_SEGMENT;
-
-//
-// Instruction rep function definition
-//
-typedef enum {
-  RepNone = 0,
-  RepZ,
-  RepNZ,
-} SEV_ES_INSTRUCTION_REP;
-
-typedef struct {
-  UINT8    Rm;
-  UINT8    Reg;
-  UINT8    Mod;
-} SEV_ES_INSTRUCTION_MODRM_EXT;
-
-typedef struct {
-  UINT8    Base;
-  UINT8    Index;
-  UINT8    Scale;
-} SEV_ES_INSTRUCTION_SIB_EXT;
-
-//
-// Instruction opcode definition
-//
-typedef struct {
-  SEV_ES_INSTRUCTION_MODRM_EXT    ModRm;
-
-  SEV_ES_INSTRUCTION_SIB_EXT      Sib;
-
-  UINTN                           RegData;
-  UINTN                           RmData;
-} SEV_ES_INSTRUCTION_OPCODE_EXT;
-
-//
-// Instruction parsing context definition
-//
-typedef struct {
-  GHCB                             *Ghcb;
-
-  SEV_ES_INSTRUCTION_MODE          Mode;
-  SEV_ES_INSTRUCTION_SIZE          DataSize;
-  SEV_ES_INSTRUCTION_SIZE          AddrSize;
-  BOOLEAN                          SegmentSpecified;
-  SEV_ES_INSTRUCTION_SEGMENT       Segment;
-  SEV_ES_INSTRUCTION_REP           RepMode;
-
-  UINT8                            *Begin;
-  UINT8                            *End;
-
-  UINT8                            *Prefixes;
-  UINT8                            *OpCodes;
-  UINT8                            *Displacement;
-  UINT8                            *Immediate;
-
-  INSTRUCTION_REX_PREFIX           RexPrefix;
-
-  BOOLEAN                          ModRmPresent;
-  INSTRUCTION_MODRM                ModRm;
-
-  BOOLEAN                          SibPresent;
-  INSTRUCTION_SIB                  Sib;
-
-  UINTN                            PrefixSize;
-  UINTN                            OpCodeSize;
-  UINTN                            DisplacementSize;
-  UINTN                            ImmediateSize;
-
-  SEV_ES_INSTRUCTION_OPCODE_EXT    Ext;
-} SEV_ES_INSTRUCTION_DATA;
+#include "CcInstruction.h"
 
 //
 // Non-automatic Exit function prototype
@@ -125,9 +26,9 @@ typedef struct {
 typedef
 UINT64
 (*NAE_EXIT) (
-  GHCB                     *Ghcb,
-  EFI_SYSTEM_CONTEXT_X64   *Regs,
-  SEV_ES_INSTRUCTION_DATA  *InstructionData
+  GHCB                    *Ghcb,
+  EFI_SYSTEM_CONTEXT_X64  *Regs,
+  CC_INSTRUCTION_DATA     *InstructionData
   );
 
 //
@@ -156,439 +57,6 @@ typedef PACKED struct {
 } SEV_SNP_CPUID_INFO;
 
 /**
-  Return a pointer to the contents of the specified register.
-
-  Based upon the input register, return a pointer to the registers contents
-  in the x86 processor context.
-
-  @param[in] Regs      x64 processor context
-  @param[in] Register  Register to obtain pointer for
-
-  @return              Pointer to the contents of the requested register
-
-**/
-STATIC
-UINT64 *
-GetRegisterPointer (
-  IN EFI_SYSTEM_CONTEXT_X64  *Regs,
-  IN UINT8                   Register
-  )
-{
-  UINT64  *Reg;
-
-  switch (Register) {
-    case 0:
-      Reg = &Regs->Rax;
-      break;
-    case 1:
-      Reg = &Regs->Rcx;
-      break;
-    case 2:
-      Reg = &Regs->Rdx;
-      break;
-    case 3:
-      Reg = &Regs->Rbx;
-      break;
-    case 4:
-      Reg = &Regs->Rsp;
-      break;
-    case 5:
-      Reg = &Regs->Rbp;
-      break;
-    case 6:
-      Reg = &Regs->Rsi;
-      break;
-    case 7:
-      Reg = &Regs->Rdi;
-      break;
-    case 8:
-      Reg = &Regs->R8;
-      break;
-    case 9:
-      Reg = &Regs->R9;
-      break;
-    case 10:
-      Reg = &Regs->R10;
-      break;
-    case 11:
-      Reg = &Regs->R11;
-      break;
-    case 12:
-      Reg = &Regs->R12;
-      break;
-    case 13:
-      Reg = &Regs->R13;
-      break;
-    case 14:
-      Reg = &Regs->R14;
-      break;
-    case 15:
-      Reg = &Regs->R15;
-      break;
-    default:
-      Reg = NULL;
-  }
-
-  ASSERT (Reg != NULL);
-
-  return Reg;
-}
-
-/**
-  Update the instruction parsing context for displacement bytes.
-
-  @param[in, out] InstructionData  Instruction parsing context
-  @param[in]      Size             The instruction displacement size
-
-**/
-STATIC
-VOID
-UpdateForDisplacement (
-  IN OUT SEV_ES_INSTRUCTION_DATA  *InstructionData,
-  IN     UINTN                    Size
-  )
-{
-  InstructionData->DisplacementSize = Size;
-  InstructionData->Immediate       += Size;
-  InstructionData->End             += Size;
-}
-
-/**
-  Determine if an instruction address if RIP relative.
-
-  Examine the instruction parsing context to determine if the address offset
-  is relative to the instruction pointer.
-
-  @param[in] InstructionData  Instruction parsing context
-
-  @retval TRUE                Instruction addressing is RIP relative
-  @retval FALSE               Instruction addressing is not RIP relative
-
-**/
-STATIC
-BOOLEAN
-IsRipRelative (
-  IN SEV_ES_INSTRUCTION_DATA  *InstructionData
-  )
-{
-  SEV_ES_INSTRUCTION_OPCODE_EXT  *Ext;
-
-  Ext = &InstructionData->Ext;
-
-  return ((InstructionData->Mode == LongMode64Bit) &&
-          (Ext->ModRm.Mod == 0) &&
-          (Ext->ModRm.Rm == 5)  &&
-          (InstructionData->SibPresent == FALSE));
-}
-
-/**
-  Return the effective address of a memory operand.
-
-  Examine the instruction parsing context to obtain the effective memory
-  address of a memory operand.
-
-  @param[in] Regs             x64 processor context
-  @param[in] InstructionData  Instruction parsing context
-
-  @return                     The memory operand effective address
-
-**/
-STATIC
-UINT64
-GetEffectiveMemoryAddress (
-  IN EFI_SYSTEM_CONTEXT_X64   *Regs,
-  IN SEV_ES_INSTRUCTION_DATA  *InstructionData
-  )
-{
-  SEV_ES_INSTRUCTION_OPCODE_EXT  *Ext;
-  UINT64                         EffectiveAddress;
-
-  Ext              = &InstructionData->Ext;
-  EffectiveAddress = 0;
-
-  if (IsRipRelative (InstructionData)) {
-    //
-    // RIP-relative displacement is a 32-bit signed value
-    //
-    INT32  RipRelative;
-
-    RipRelative = *(INT32 *)InstructionData->Displacement;
-
-    UpdateForDisplacement (InstructionData, 4);
-
-    //
-    // Negative displacement is handled by standard UINT64 wrap-around.
-    //
-    return Regs->Rip + (UINT64)RipRelative;
-  }
-
-  switch (Ext->ModRm.Mod) {
-    case 1:
-      UpdateForDisplacement (InstructionData, 1);
-      EffectiveAddress += (UINT64)(*(INT8 *)(InstructionData->Displacement));
-      break;
-    case 2:
-      switch (InstructionData->AddrSize) {
-        case Size16Bits:
-          UpdateForDisplacement (InstructionData, 2);
-          EffectiveAddress += (UINT64)(*(INT16 *)(InstructionData->Displacement));
-          break;
-        default:
-          UpdateForDisplacement (InstructionData, 4);
-          EffectiveAddress += (UINT64)(*(INT32 *)(InstructionData->Displacement));
-          break;
-      }
-
-      break;
-  }
-
-  if (InstructionData->SibPresent) {
-    INT64  Displacement;
-
-    if (Ext->Sib.Index != 4) {
-      CopyMem (
-        &Displacement,
-        GetRegisterPointer (Regs, Ext->Sib.Index),
-        sizeof (Displacement)
-        );
-      Displacement *= (INT64)(1 << Ext->Sib.Scale);
-
-      //
-      // Negative displacement is handled by standard UINT64 wrap-around.
-      //
-      EffectiveAddress += (UINT64)Displacement;
-    }
-
-    if ((Ext->Sib.Base != 5) || Ext->ModRm.Mod) {
-      EffectiveAddress += *GetRegisterPointer (Regs, Ext->Sib.Base);
-    } else {
-      UpdateForDisplacement (InstructionData, 4);
-      EffectiveAddress += (UINT64)(*(INT32 *)(InstructionData->Displacement));
-    }
-  } else {
-    EffectiveAddress += *GetRegisterPointer (Regs, Ext->ModRm.Rm);
-  }
-
-  return EffectiveAddress;
-}
-
-/**
-  Decode a ModRM byte.
-
-  Examine the instruction parsing context to decode a ModRM byte and the SIB
-  byte, if present.
-
-  @param[in]      Regs             x64 processor context
-  @param[in, out] InstructionData  Instruction parsing context
-
-**/
-STATIC
-VOID
-DecodeModRm (
-  IN     EFI_SYSTEM_CONTEXT_X64   *Regs,
-  IN OUT SEV_ES_INSTRUCTION_DATA  *InstructionData
-  )
-{
-  SEV_ES_INSTRUCTION_OPCODE_EXT  *Ext;
-  INSTRUCTION_REX_PREFIX         *RexPrefix;
-  INSTRUCTION_MODRM              *ModRm;
-  INSTRUCTION_SIB                *Sib;
-
-  RexPrefix = &InstructionData->RexPrefix;
-  Ext       = &InstructionData->Ext;
-  ModRm     = &InstructionData->ModRm;
-  Sib       = &InstructionData->Sib;
-
-  InstructionData->ModRmPresent = TRUE;
-  ModRm->Uint8                  = *(InstructionData->End);
-
-  InstructionData->Displacement++;
-  InstructionData->Immediate++;
-  InstructionData->End++;
-
-  Ext->ModRm.Mod = ModRm->Bits.Mod;
-  Ext->ModRm.Reg = (RexPrefix->Bits.BitR << 3) | ModRm->Bits.Reg;
-  Ext->ModRm.Rm  = (RexPrefix->Bits.BitB << 3) | ModRm->Bits.Rm;
-
-  Ext->RegData = *GetRegisterPointer (Regs, Ext->ModRm.Reg);
-
-  if (Ext->ModRm.Mod == 3) {
-    Ext->RmData = *GetRegisterPointer (Regs, Ext->ModRm.Rm);
-  } else {
-    if (ModRm->Bits.Rm == 4) {
-      InstructionData->SibPresent = TRUE;
-      Sib->Uint8                  = *(InstructionData->End);
-
-      InstructionData->Displacement++;
-      InstructionData->Immediate++;
-      InstructionData->End++;
-
-      Ext->Sib.Scale = Sib->Bits.Scale;
-      Ext->Sib.Index = (RexPrefix->Bits.BitX << 3) | Sib->Bits.Index;
-      Ext->Sib.Base  = (RexPrefix->Bits.BitB << 3) | Sib->Bits.Base;
-    }
-
-    Ext->RmData = GetEffectiveMemoryAddress (Regs, InstructionData);
-  }
-}
-
-/**
-  Decode instruction prefixes.
-
-  Parse the instruction data to track the instruction prefixes that have
-  been used.
-
-  @param[in]      Regs             x64 processor context
-  @param[in, out] InstructionData  Instruction parsing context
-
-**/
-STATIC
-VOID
-DecodePrefixes (
-  IN     EFI_SYSTEM_CONTEXT_X64   *Regs,
-  IN OUT SEV_ES_INSTRUCTION_DATA  *InstructionData
-  )
-{
-  SEV_ES_INSTRUCTION_MODE  Mode;
-  SEV_ES_INSTRUCTION_SIZE  ModeDataSize;
-  SEV_ES_INSTRUCTION_SIZE  ModeAddrSize;
-  UINT8                    *Byte;
-
-  //
-  // Always in 64-bit mode
-  //
-  Mode         = LongMode64Bit;
-  ModeDataSize = Size32Bits;
-  ModeAddrSize = Size64Bits;
-
-  InstructionData->Mode     = Mode;
-  InstructionData->DataSize = ModeDataSize;
-  InstructionData->AddrSize = ModeAddrSize;
-
-  InstructionData->Prefixes = InstructionData->Begin;
-
-  Byte = InstructionData->Prefixes;
-  for ( ; ; Byte++, InstructionData->PrefixSize++) {
-    //
-    // Check the 0x40 to 0x4F range using an if statement here since some
-    // compilers don't like the "case 0x40 ... 0x4F:" syntax. This avoids
-    // 16 case statements below.
-    //
-    if ((*Byte >= REX_PREFIX_START) && (*Byte <= REX_PREFIX_STOP)) {
-      InstructionData->RexPrefix.Uint8 = *Byte;
-      if ((*Byte & REX_64BIT_OPERAND_SIZE_MASK) != 0) {
-        InstructionData->DataSize = Size64Bits;
-      }
-
-      continue;
-    }
-
-    switch (*Byte) {
-      case OVERRIDE_SEGMENT_CS:
-      case OVERRIDE_SEGMENT_DS:
-      case OVERRIDE_SEGMENT_ES:
-      case OVERRIDE_SEGMENT_SS:
-        if (Mode != LongMode64Bit) {
-          InstructionData->SegmentSpecified = TRUE;
-          InstructionData->Segment          = (*Byte >> 3) & 3;
-        }
-
-        break;
-
-      case OVERRIDE_SEGMENT_FS:
-      case OVERRIDE_SEGMENT_GS:
-        InstructionData->SegmentSpecified = TRUE;
-        InstructionData->Segment          = *Byte & 7;
-        break;
-
-      case OVERRIDE_OPERAND_SIZE:
-        if (InstructionData->RexPrefix.Uint8 == 0) {
-          InstructionData->DataSize =
-            (Mode == LongMode64Bit)       ? Size16Bits :
-            (Mode == LongModeCompat32Bit) ? Size16Bits :
-            (Mode == LongModeCompat16Bit) ? Size32Bits : 0;
-        }
-
-        break;
-
-      case OVERRIDE_ADDRESS_SIZE:
-        InstructionData->AddrSize =
-          (Mode == LongMode64Bit)       ? Size32Bits :
-          (Mode == LongModeCompat32Bit) ? Size16Bits :
-          (Mode == LongModeCompat16Bit) ? Size32Bits : 0;
-        break;
-
-      case LOCK_PREFIX:
-        break;
-
-      case REPZ_PREFIX:
-        InstructionData->RepMode = RepZ;
-        break;
-
-      case REPNZ_PREFIX:
-        InstructionData->RepMode = RepNZ;
-        break;
-
-      default:
-        InstructionData->OpCodes    = Byte;
-        InstructionData->OpCodeSize = (*Byte == TWO_BYTE_OPCODE_ESCAPE) ? 2 : 1;
-
-        InstructionData->End          = Byte + InstructionData->OpCodeSize;
-        InstructionData->Displacement = InstructionData->End;
-        InstructionData->Immediate    = InstructionData->End;
-        return;
-    }
-  }
-}
-
-/**
-  Determine instruction length
-
-  Return the total length of the parsed instruction.
-
-  @param[in] InstructionData  Instruction parsing context
-
-  @return                     Length of parsed instruction
-
-**/
-STATIC
-UINT64
-InstructionLength (
-  IN SEV_ES_INSTRUCTION_DATA  *InstructionData
-  )
-{
-  return (UINT64)(InstructionData->End - InstructionData->Begin);
-}
-
-/**
-  Initialize the instruction parsing context.
-
-  Initialize the instruction parsing context, which includes decoding the
-  instruction prefixes.
-
-  @param[in, out] InstructionData  Instruction parsing context
-  @param[in]      Ghcb             Pointer to the Guest-Hypervisor Communication
-                                   Block
-  @param[in]      Regs             x64 processor context
-
-**/
-STATIC
-VOID
-InitInstructionData (
-  IN OUT SEV_ES_INSTRUCTION_DATA  *InstructionData,
-  IN     GHCB                     *Ghcb,
-  IN     EFI_SYSTEM_CONTEXT_X64   *Regs
-  )
-{
-  SetMem (InstructionData, sizeof (*InstructionData), 0);
-  InstructionData->Ghcb  = Ghcb;
-  InstructionData->Begin = (UINT8 *)Regs->Rip;
-  InstructionData->End   = (UINT8 *)Regs->Rip;
-
-  DecodePrefixes (Regs, InstructionData);
-}
-
-/**
   Report an unsupported event to the hypervisor
 
   Use the VMGEXIT support to report an unsupported event to the hypervisor.
@@ -604,9 +72,9 @@ InitInstructionData (
 STATIC
 UINT64
 UnsupportedExit (
-  IN GHCB                     *Ghcb,
-  IN EFI_SYSTEM_CONTEXT_X64   *Regs,
-  IN SEV_ES_INSTRUCTION_DATA  *InstructionData
+  IN GHCB                    *Ghcb,
+  IN EFI_SYSTEM_CONTEXT_X64  *Regs,
+  IN CC_INSTRUCTION_DATA     *InstructionData
   )
 {
   UINT64  Status;
@@ -630,7 +98,7 @@ UnsupportedExit (
   Validate that the MMIO memory access is not to encrypted memory.
 
   Examine the pagetable entry for the memory specified. MMIO should not be
-  performed against encrypted memory. MMIO to the APIC page is always allowed.
+  performed against encrypted memory.
 
   @param[in] Ghcb           Pointer to the Guest-Hypervisor Communication Block
   @param[in] MemoryAddress  Memory address to validate
@@ -650,16 +118,6 @@ ValidateMmioMemory (
 {
   MEM_ENCRYPT_SEV_ADDRESS_RANGE_STATE  State;
   GHCB_EVENT_INJECTION                 GpEvent;
-  UINTN                                Address;
-
-  //
-  // Allow APIC accesses (which will have the encryption bit set during
-  // SEC and PEI phases).
-  //
-  Address = MemoryAddress & ~(SIZE_4KB - 1);
-  if (Address == GetLocalApicBaseAddress ()) {
-    return 0;
-  }
 
   State = MemEncryptSevGetAddressRangeState (
             0,
@@ -703,9 +161,9 @@ ValidateMmioMemory (
 STATIC
 UINT64
 MmioExit (
-  IN OUT GHCB                     *Ghcb,
-  IN OUT EFI_SYSTEM_CONTEXT_X64   *Regs,
-  IN OUT SEV_ES_INSTRUCTION_DATA  *InstructionData
+  IN OUT GHCB                    *Ghcb,
+  IN OUT EFI_SYSTEM_CONTEXT_X64  *Regs,
+  IN OUT CC_INSTRUCTION_DATA     *InstructionData
   )
 {
   UINT64  ExitInfo1, ExitInfo2, Status;
@@ -731,7 +189,7 @@ MmioExit (
     // fall through
     //
     case 0x89:
-      DecodeModRm (Regs, InstructionData);
+      CcDecodeModRm (Regs, InstructionData);
       Bytes = ((Bytes != 0) ? Bytes :
                (InstructionData->DataSize == Size16Bits) ? 2 :
                (InstructionData->DataSize == Size32Bits) ? 4 :
@@ -824,7 +282,7 @@ MmioExit (
     // fall through
     //
     case 0xC7:
-      DecodeModRm (Regs, InstructionData);
+      CcDecodeModRm (Regs, InstructionData);
       Bytes = ((Bytes != 0) ? Bytes :
                (InstructionData->DataSize == Size16Bits) ? 2 :
                (InstructionData->DataSize == Size32Bits) ? 4 :
@@ -860,7 +318,7 @@ MmioExit (
     // fall through
     //
     case 0x8B:
-      DecodeModRm (Regs, InstructionData);
+      CcDecodeModRm (Regs, InstructionData);
       Bytes = ((Bytes != 0) ? Bytes :
                (InstructionData->DataSize == Size16Bits) ? 2 :
                (InstructionData->DataSize == Size32Bits) ? 4 :
@@ -888,7 +346,7 @@ MmioExit (
         return Status;
       }
 
-      Register = GetRegisterPointer (Regs, InstructionData->Ext.ModRm.Reg);
+      Register = CcGetRegisterPointer (Regs, InstructionData->Ext.ModRm.Reg);
       if (Bytes == 4) {
         //
         // Zero-extend for 32-bit operation
@@ -967,7 +425,7 @@ MmioExit (
     // fall through
     //
     case 0xB7:
-      DecodeModRm (Regs, InstructionData);
+      CcDecodeModRm (Regs, InstructionData);
       Bytes = (Bytes != 0) ? Bytes : 2;
 
       Status = ValidateMmioMemory (Ghcb, InstructionData->Ext.RmData, Bytes);
@@ -985,7 +443,7 @@ MmioExit (
         return Status;
       }
 
-      Register = GetRegisterPointer (Regs, InstructionData->Ext.ModRm.Reg);
+      Register = CcGetRegisterPointer (Regs, InstructionData->Ext.ModRm.Reg);
       SetMem (Register, (UINTN)(1 << InstructionData->DataSize), 0);
       CopyMem (Register, Ghcb->SharedBuffer, Bytes);
       break;
@@ -999,7 +457,7 @@ MmioExit (
     // fall through
     //
     case 0xBF:
-      DecodeModRm (Regs, InstructionData);
+      CcDecodeModRm (Regs, InstructionData);
       Bytes = (Bytes != 0) ? Bytes : 2;
 
       Status = ValidateMmioMemory (Ghcb, InstructionData->Ext.RmData, Bytes);
@@ -1029,7 +487,7 @@ MmioExit (
         SignByte = ((*Data & BIT15) != 0) ? 0xFF : 0x00;
       }
 
-      Register = GetRegisterPointer (Regs, InstructionData->Ext.ModRm.Reg);
+      Register = CcGetRegisterPointer (Regs, InstructionData->Ext.ModRm.Reg);
       SetMem (Register, (UINTN)(1 << InstructionData->DataSize), SignByte);
       CopyMem (Register, Ghcb->SharedBuffer, Bytes);
       break;
@@ -1060,13 +518,11 @@ MmioExit (
 STATIC
 UINT64
 MwaitExit (
-  IN OUT GHCB                     *Ghcb,
-  IN OUT EFI_SYSTEM_CONTEXT_X64   *Regs,
-  IN     SEV_ES_INSTRUCTION_DATA  *InstructionData
+  IN OUT GHCB                    *Ghcb,
+  IN OUT EFI_SYSTEM_CONTEXT_X64  *Regs,
+  IN     CC_INSTRUCTION_DATA     *InstructionData
   )
 {
-  DecodeModRm (Regs, InstructionData);
-
   Ghcb->SaveArea.Rax = Regs->Rax;
   CcExitVmgSetOffsetValid (Ghcb, GhcbRax);
   Ghcb->SaveArea.Rcx = Regs->Rcx;
@@ -1092,13 +548,11 @@ MwaitExit (
 STATIC
 UINT64
 MonitorExit (
-  IN OUT GHCB                     *Ghcb,
-  IN OUT EFI_SYSTEM_CONTEXT_X64   *Regs,
-  IN     SEV_ES_INSTRUCTION_DATA  *InstructionData
+  IN OUT GHCB                    *Ghcb,
+  IN OUT EFI_SYSTEM_CONTEXT_X64  *Regs,
+  IN     CC_INSTRUCTION_DATA     *InstructionData
   )
 {
-  DecodeModRm (Regs, InstructionData);
-
   Ghcb->SaveArea.Rax = Regs->Rax;  // Identity mapped, so VA = PA
   CcExitVmgSetOffsetValid (Ghcb, GhcbRax);
   Ghcb->SaveArea.Rcx = Regs->Rcx;
@@ -1126,9 +580,9 @@ MonitorExit (
 STATIC
 UINT64
 WbinvdExit (
-  IN OUT GHCB                     *Ghcb,
-  IN OUT EFI_SYSTEM_CONTEXT_X64   *Regs,
-  IN     SEV_ES_INSTRUCTION_DATA  *InstructionData
+  IN OUT GHCB                    *Ghcb,
+  IN OUT EFI_SYSTEM_CONTEXT_X64  *Regs,
+  IN     CC_INSTRUCTION_DATA     *InstructionData
   )
 {
   return CcExitVmgExit (Ghcb, SVM_EXIT_WBINVD, 0, 0);
@@ -1151,14 +605,14 @@ WbinvdExit (
 STATIC
 UINT64
 RdtscpExit (
-  IN OUT GHCB                     *Ghcb,
-  IN OUT EFI_SYSTEM_CONTEXT_X64   *Regs,
-  IN     SEV_ES_INSTRUCTION_DATA  *InstructionData
+  IN OUT GHCB                    *Ghcb,
+  IN OUT EFI_SYSTEM_CONTEXT_X64  *Regs,
+  IN     CC_INSTRUCTION_DATA     *InstructionData
   )
 {
   UINT64  Status;
 
-  DecodeModRm (Regs, InstructionData);
+  CcDecodeModRm (Regs, InstructionData);
 
   Status = CcExitVmgExit (Ghcb, SVM_EXIT_RDTSCP, 0, 0);
   if (Status != 0) {
@@ -1196,14 +650,12 @@ RdtscpExit (
 STATIC
 UINT64
 VmmCallExit (
-  IN OUT GHCB                     *Ghcb,
-  IN OUT EFI_SYSTEM_CONTEXT_X64   *Regs,
-  IN     SEV_ES_INSTRUCTION_DATA  *InstructionData
+  IN OUT GHCB                    *Ghcb,
+  IN OUT EFI_SYSTEM_CONTEXT_X64  *Regs,
+  IN     CC_INSTRUCTION_DATA     *InstructionData
   )
 {
   UINT64  Status;
-
-  DecodeModRm (Regs, InstructionData);
 
   Ghcb->SaveArea.Rax = Regs->Rax;
   CcExitVmgSetOffsetValid (Ghcb, GhcbRax);
@@ -1241,14 +693,33 @@ VmmCallExit (
 STATIC
 UINT64
 MsrExit (
-  IN OUT GHCB                     *Ghcb,
-  IN OUT EFI_SYSTEM_CONTEXT_X64   *Regs,
-  IN     SEV_ES_INSTRUCTION_DATA  *InstructionData
+  IN OUT GHCB                    *Ghcb,
+  IN OUT EFI_SYSTEM_CONTEXT_X64  *Regs,
+  IN     CC_INSTRUCTION_DATA     *InstructionData
   )
 {
-  UINT64  ExitInfo1, Status;
+  MSR_SVSM_CAA_REGISTER  Msr;
+  UINT64                 ExitInfo1;
+  UINT64                 Status;
 
   ExitInfo1 = 0;
+
+  //
+  // The SVSM CAA MSR is a software implemented MSR and not supported
+  // by the hardware, handle it directly.
+  //
+  if (Regs->Rax == MSR_SVSM_CAA) {
+    // Writes to the SVSM CAA MSR are ignored
+    if (*(InstructionData->OpCodes + 1) == 0x30) {
+      return 0;
+    }
+
+    Msr.Uint64 = AmdSvsmSnpGetCaa ();
+    Regs->Rax  = Msr.Bits.Lower32Bits;
+    Regs->Rdx  = Msr.Bits.Upper32Bits;
+
+    return 0;
+  }
 
   switch (*(InstructionData->OpCodes + 1)) {
     case 0x30: // WRMSR
@@ -1302,8 +773,8 @@ MsrExit (
 STATIC
 UINT64
 IoioExitInfo (
-  IN     EFI_SYSTEM_CONTEXT_X64   *Regs,
-  IN OUT SEV_ES_INSTRUCTION_DATA  *InstructionData
+  IN     EFI_SYSTEM_CONTEXT_X64  *Regs,
+  IN OUT CC_INSTRUCTION_DATA     *InstructionData
   )
 {
   UINT64  ExitInfo;
@@ -1437,9 +908,9 @@ IoioExitInfo (
 STATIC
 UINT64
 IoioExit (
-  IN OUT GHCB                     *Ghcb,
-  IN OUT EFI_SYSTEM_CONTEXT_X64   *Regs,
-  IN     SEV_ES_INSTRUCTION_DATA  *InstructionData
+  IN OUT GHCB                    *Ghcb,
+  IN OUT EFI_SYSTEM_CONTEXT_X64  *Regs,
+  IN     CC_INSTRUCTION_DATA     *InstructionData
   )
 {
   UINT64   ExitInfo1, ExitInfo2, Status;
@@ -1531,9 +1002,9 @@ IoioExit (
 STATIC
 UINT64
 InvdExit (
-  IN OUT GHCB                     *Ghcb,
-  IN OUT EFI_SYSTEM_CONTEXT_X64   *Regs,
-  IN     SEV_ES_INSTRUCTION_DATA  *InstructionData
+  IN OUT GHCB                    *Ghcb,
+  IN OUT EFI_SYSTEM_CONTEXT_X64  *Regs,
+  IN     CC_INSTRUCTION_DATA     *InstructionData
   )
 {
   return CcExitVmgExit (Ghcb, SVM_EXIT_INVD, 0, 0);
@@ -1647,8 +1118,6 @@ SnpEnabled (
 
   @param[in]      XFeaturesEnabled  Bit-mask of enabled XSAVE features/areas as
                                     indicated by XCR0/MSR_IA32_XSS bits
-  @param[in]      XSaveBaseSize     Base/legacy XSAVE area size (e.g. when
-                                    XCR0 is 1)
   @param[in, out] XSaveSize         Pointer to storage for calculated XSAVE area
                                     size
   @param[in]      Compacted         Whether or not the calculation is for the
@@ -1663,7 +1132,6 @@ STATIC
 BOOLEAN
 GetCpuidXSaveSize (
   IN     UINT64   XFeaturesEnabled,
-  IN     UINT32   XSaveBaseSize,
   IN OUT UINT32   *XSaveSize,
   IN     BOOLEAN  Compacted
   )
@@ -1672,15 +1140,16 @@ GetCpuidXSaveSize (
   UINT64              XFeaturesFound = 0;
   UINT32              Idx;
 
-  *XSaveSize = XSaveBaseSize;
+  //
+  // The base/legacy XSave size is documented to be 0x240 in the APM.
+  //
+  *XSaveSize = 0x240;
   CpuidInfo  = (SEV_SNP_CPUID_INFO *)(UINT64)PcdGet32 (PcdOvmfCpuidBase);
 
   for (Idx = 0; Idx < CpuidInfo->Count; Idx++) {
     SEV_SNP_CPUID_FUNCTION  *CpuidFn = &CpuidInfo->function[Idx];
 
-    if (!((CpuidFn->EaxIn == 0xD) &&
-          ((CpuidFn->EcxIn == 0) || (CpuidFn->EcxIn == 1))))
-    {
+    if (!((CpuidFn->EaxIn == 0xD) && (CpuidFn->EcxIn > 1))) {
       continue;
     }
 
@@ -1890,7 +1359,6 @@ GetCpuidFw (
 
     if (!GetCpuidXSaveSize (
            XCr0 | XssMsr.Uint64,
-           *Ebx,
            &XSaveSize,
            Compacted
            ))
@@ -1924,6 +1392,11 @@ GetCpuidFw (
     *Ebx = (*Ebx & 0xFFFFFF00) | (Ebx2 & 0x000000FF);
     /* node ID */
     *Ecx = (*Ecx & 0xFFFFFF00) | (Ecx2 & 0x000000FF);
+  } else if (EaxIn == 0x8000001F) {
+    /* Set the SVSM feature bit if running under an SVSM */
+    if (AmdSvsmIsSvsmPresent ()) {
+      *Eax |= BIT28;
+    }
   }
 
 Out:
@@ -1949,9 +1422,9 @@ Out:
 STATIC
 UINT64
 CpuidExit (
-  IN OUT GHCB                     *Ghcb,
-  IN OUT EFI_SYSTEM_CONTEXT_X64   *Regs,
-  IN     SEV_ES_INSTRUCTION_DATA  *InstructionData
+  IN OUT GHCB                    *Ghcb,
+  IN OUT EFI_SYSTEM_CONTEXT_X64  *Regs,
+  IN     CC_INSTRUCTION_DATA     *InstructionData
   )
 {
   BOOLEAN  Unsupported;
@@ -2041,9 +1514,9 @@ CpuidFail:
 STATIC
 UINT64
 RdpmcExit (
-  IN OUT GHCB                     *Ghcb,
-  IN OUT EFI_SYSTEM_CONTEXT_X64   *Regs,
-  IN     SEV_ES_INSTRUCTION_DATA  *InstructionData
+  IN OUT GHCB                    *Ghcb,
+  IN OUT EFI_SYSTEM_CONTEXT_X64  *Regs,
+  IN     CC_INSTRUCTION_DATA     *InstructionData
   )
 {
   UINT64  Status;
@@ -2085,9 +1558,9 @@ RdpmcExit (
 STATIC
 UINT64
 RdtscExit (
-  IN OUT GHCB                     *Ghcb,
-  IN OUT EFI_SYSTEM_CONTEXT_X64   *Regs,
-  IN     SEV_ES_INSTRUCTION_DATA  *InstructionData
+  IN OUT GHCB                    *Ghcb,
+  IN OUT EFI_SYSTEM_CONTEXT_X64  *Regs,
+  IN     CC_INSTRUCTION_DATA     *InstructionData
   )
 {
   UINT64  Status;
@@ -2126,25 +1599,23 @@ RdtscExit (
 STATIC
 UINT64
 Dr7WriteExit (
-  IN OUT GHCB                     *Ghcb,
-  IN OUT EFI_SYSTEM_CONTEXT_X64   *Regs,
-  IN     SEV_ES_INSTRUCTION_DATA  *InstructionData
+  IN OUT GHCB                    *Ghcb,
+  IN OUT EFI_SYSTEM_CONTEXT_X64  *Regs,
+  IN     CC_INSTRUCTION_DATA     *InstructionData
   )
 {
-  SEV_ES_INSTRUCTION_OPCODE_EXT  *Ext;
-  SEV_ES_PER_CPU_DATA            *SevEsData;
-  UINT64                         *Register;
-  UINT64                         Status;
+  CC_INSTRUCTION_OPCODE_EXT  *Ext;
+  SEV_ES_PER_CPU_DATA        *SevEsData;
+  UINT64                     *Register;
+  UINT64                     Status;
 
   Ext       = &InstructionData->Ext;
   SevEsData = (SEV_ES_PER_CPU_DATA *)(Ghcb + 1);
 
-  DecodeModRm (Regs, InstructionData);
-
   //
   // MOV DRn always treats MOD == 3 no matter how encoded
   //
-  Register = GetRegisterPointer (Regs, Ext->ModRm.Rm);
+  Register = CcGetRegisterPointer (Regs, Ext->ModRm.Rm);
 
   //
   // Using a value of 0 for ExitInfo1 means RAX holds the value
@@ -2179,24 +1650,22 @@ Dr7WriteExit (
 STATIC
 UINT64
 Dr7ReadExit (
-  IN OUT GHCB                     *Ghcb,
-  IN OUT EFI_SYSTEM_CONTEXT_X64   *Regs,
-  IN     SEV_ES_INSTRUCTION_DATA  *InstructionData
+  IN OUT GHCB                    *Ghcb,
+  IN OUT EFI_SYSTEM_CONTEXT_X64  *Regs,
+  IN     CC_INSTRUCTION_DATA     *InstructionData
   )
 {
-  SEV_ES_INSTRUCTION_OPCODE_EXT  *Ext;
-  SEV_ES_PER_CPU_DATA            *SevEsData;
-  UINT64                         *Register;
+  CC_INSTRUCTION_OPCODE_EXT  *Ext;
+  SEV_ES_PER_CPU_DATA        *SevEsData;
+  UINT64                     *Register;
 
   Ext       = &InstructionData->Ext;
   SevEsData = (SEV_ES_PER_CPU_DATA *)(Ghcb + 1);
 
-  DecodeModRm (Regs, InstructionData);
-
   //
   // MOV DRn always treats MOD == 3 no matter how encoded
   //
-  Register = GetRegisterPointer (Regs, Ext->ModRm.Rm);
+  Register = CcGetRegisterPointer (Regs, Ext->ModRm.Rm);
 
   //
   // If there is a cached valued for DR7, return that. Otherwise return the
@@ -2205,6 +1674,170 @@ Dr7ReadExit (
   *Register = (SevEsData->Dr7Cached == 1) ? SevEsData->Dr7 : 0x400;
 
   return 0;
+}
+
+/**
+  Check that the opcode matches the exit code for a #VC.
+
+  Each exit code should only be raised while executing certain instructions.
+  Verify that rIP points to a correct instruction based on the exit code to
+  protect against maliciously injected interrupts via the hypervisor. If it does
+  not, report an unsupported event to the hypervisor.
+
+  Decodes the ModRm byte into InstructionData if necessary.
+
+  @param[in, out] Ghcb             Pointer to the Guest-Hypervisor Communication
+                                   Block
+  @param[in, out] Regs             x64 processor context
+  @param[in, out] InstructionData  Instruction parsing context
+  @param[in]      ExitCode         Exit code given by #VC.
+
+  @retval 0                        No problems detected.
+  @return                          New exception value to propagate
+
+
+**/
+STATIC
+UINT64
+VcCheckOpcodeBytes (
+  IN OUT GHCB                    *Ghcb,
+  IN OUT EFI_SYSTEM_CONTEXT_X64  *Regs,
+  IN OUT CC_INSTRUCTION_DATA     *InstructionData,
+  IN     UINT64                  ExitCode
+  )
+{
+  UINT8  OpCode;
+
+  //
+  // Expected opcodes are either 1 or 2 bytes. If they are 2 bytes, they always
+  // start with TWO_BYTE_OPCODE_ESCAPE (0x0f), so skip over that.
+  //
+  OpCode = *(InstructionData->OpCodes);
+  if (OpCode == TWO_BYTE_OPCODE_ESCAPE) {
+    OpCode = *(InstructionData->OpCodes + 1);
+  }
+
+  switch (ExitCode) {
+    case SVM_EXIT_IOIO_PROT:
+    case SVM_EXIT_NPF:
+      /* handled separately */
+      return 0;
+
+    case SVM_EXIT_CPUID:
+      if (OpCode == 0xa2) {
+        return 0;
+      }
+
+      break;
+
+    case SVM_EXIT_INVD:
+      if (OpCode == 0x08) {
+        return 0;
+      }
+
+      break;
+
+    case SVM_EXIT_MONITOR:
+      CcDecodeModRm (Regs, InstructionData);
+
+      if ((OpCode == 0x01) &&
+          (  (InstructionData->ModRm.Uint8 == 0xc8)   /* MONITOR */
+          || (InstructionData->ModRm.Uint8 == 0xfa))) /* MONITORX */
+      {
+        return 0;
+      }
+
+      break;
+
+    case SVM_EXIT_MWAIT:
+      CcDecodeModRm (Regs, InstructionData);
+
+      if ((OpCode == 0x01) &&
+          (  (InstructionData->ModRm.Uint8 == 0xc9)   /* MWAIT */
+          || (InstructionData->ModRm.Uint8 == 0xfb))) /* MWAITX */
+      {
+        return 0;
+      }
+
+      break;
+
+    case SVM_EXIT_MSR:
+      /* RDMSR */
+      if ((OpCode == 0x32) ||
+          /* WRMSR */
+          (OpCode == 0x30))
+      {
+        return 0;
+      }
+
+      break;
+
+    case SVM_EXIT_RDPMC:
+      if (OpCode == 0x33) {
+        return 0;
+      }
+
+      break;
+
+    case SVM_EXIT_RDTSC:
+      if (OpCode == 0x31) {
+        return 0;
+      }
+
+      break;
+
+    case SVM_EXIT_RDTSCP:
+      CcDecodeModRm (Regs, InstructionData);
+
+      if ((OpCode == 0x01) && (InstructionData->ModRm.Uint8 == 0xf9)) {
+        return 0;
+      }
+
+      break;
+
+    case SVM_EXIT_DR7_READ:
+      CcDecodeModRm (Regs, InstructionData);
+
+      if ((OpCode == 0x21) &&
+          (InstructionData->Ext.ModRm.Reg == 7))
+      {
+        return 0;
+      }
+
+      break;
+
+    case SVM_EXIT_VMMCALL:
+      CcDecodeModRm (Regs, InstructionData);
+
+      if ((OpCode == 0x01) && (InstructionData->ModRm.Uint8 == 0xd9)) {
+        return 0;
+      }
+
+      break;
+
+    case SVM_EXIT_DR7_WRITE:
+      CcDecodeModRm (Regs, InstructionData);
+
+      if ((OpCode == 0x23) &&
+          (InstructionData->Ext.ModRm.Reg == 7))
+      {
+        return 0;
+      }
+
+      break;
+
+    case SVM_EXIT_WBINVD:
+      if (OpCode == 0x9) {
+        return 0;
+      }
+
+      break;
+
+    default:
+      break;
+  }
+
+  return UnsupportedExit (Ghcb, Regs, InstructionData);
 }
 
 /**
@@ -2232,12 +1865,12 @@ InternalVmgExitHandleVc (
   IN OUT EFI_SYSTEM_CONTEXT  SystemContext
   )
 {
-  EFI_SYSTEM_CONTEXT_X64   *Regs;
-  NAE_EXIT                 NaeExit;
-  SEV_ES_INSTRUCTION_DATA  InstructionData;
-  UINT64                   ExitCode, Status;
-  EFI_STATUS               VcRet;
-  BOOLEAN                  InterruptState;
+  EFI_SYSTEM_CONTEXT_X64  *Regs;
+  NAE_EXIT                NaeExit;
+  CC_INSTRUCTION_DATA     InstructionData;
+  UINT64                  ExitCode, Status;
+  EFI_STATUS              VcRet;
+  BOOLEAN                 InterruptState;
 
   VcRet = EFI_SUCCESS;
 
@@ -2307,11 +1940,19 @@ InternalVmgExitHandleVc (
       NaeExit = UnsupportedExit;
   }
 
-  InitInstructionData (&InstructionData, Ghcb, Regs);
+  CcInitInstructionData (&InstructionData, Ghcb, Regs);
 
-  Status = NaeExit (Ghcb, Regs, &InstructionData);
+  Status = VcCheckOpcodeBytes (Ghcb, Regs, &InstructionData, ExitCode);
+
+  //
+  // If the opcode does not match the exit code, do not process the exception
+  //
   if (Status == 0) {
-    Regs->Rip += InstructionLength (&InstructionData);
+    Status = NaeExit (Ghcb, Regs, &InstructionData);
+  }
+
+  if (Status == 0) {
+    Regs->Rip += CcInstructionLength (&InstructionData);
   } else {
     GHCB_EVENT_INJECTION  Event;
 

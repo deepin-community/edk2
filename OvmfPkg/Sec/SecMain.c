@@ -11,14 +11,12 @@
 
 #include <PiPei.h>
 
-#include <Library/PeimEntryPoint.h>
 #include <Library/BaseLib.h>
 #include <Library/DebugLib.h>
 #include <Library/BaseMemoryLib.h>
 #include <Library/PeiServicesLib.h>
 #include <Library/PcdLib.h>
 #include <Library/CpuLib.h>
-#include <Library/UefiCpuLib.h>
 #include <Library/DebugAgentLib.h>
 #include <Library/IoLib.h>
 #include <Library/PeCoffLib.h>
@@ -29,7 +27,7 @@
 #include <Library/CpuExceptionHandlerLib.h>
 #include <Ppi/TemporaryRamSupport.h>
 #include <Ppi/MpInitLibDep.h>
-#include <Library/PlatformInitLib.h>
+#include <Library/TdxHelperLib.h>
 #include <Library/CcProbeLib.h>
 #include "AmdSev.h"
 
@@ -387,7 +385,7 @@ DecompressMemFvs (
     DEBUG_VERBOSE,
     "%a: OutputBuffer@%p+0x%x ScratchBuffer@%p+0x%x "
     "PcdOvmfDecompressionScratchEnd=0x%x\n",
-    __FUNCTION__,
+    __func__,
     OutputBuffer,
     OutputBufferSize,
     ScratchBuffer,
@@ -761,11 +759,24 @@ SecCoreStartupWithStack (
  #if defined (TDX_GUEST_SUPPORTED)
   if (CcProbe () == CcGuestTypeIntelTdx) {
     //
+    // From the security perspective all the external input should be measured before
+    // it is consumed. TdHob and Configuration FV (Cfv) image are passed from VMM
+    // and should be measured here.
+    //
+    if (EFI_ERROR (TdxHelperMeasureTdHob ())) {
+      CpuDeadLoop ();
+    }
+
+    if (EFI_ERROR (TdxHelperMeasureCfvImage ())) {
+      CpuDeadLoop ();
+    }
+
+    //
     // For Td guests, the memory map info is in TdHobLib. It should be processed
     // first so that the memory is accepted. Otherwise access to the unaccepted
     // memory will trigger tripple fault.
     //
-    if (ProcessTdxHobList () != EFI_SUCCESS) {
+    if (TdxHelperProcessTdHob () != EFI_SUCCESS) {
       CpuDeadLoop ();
     }
   }
@@ -832,7 +843,7 @@ SecCoreStartupWithStack (
     InitializeCpuExceptionHandlers (NULL);
   }
 
-  ProcessLibraryConstructorList (NULL, NULL);
+  ProcessLibraryConstructorList ();
 
   if (!SevEsIsEnabled ()) {
     //
@@ -927,6 +938,7 @@ SecCoreStartupWithStack (
   // interrupts before initializing the Debug Agent and the debug timer is
   // enabled.
   //
+  SecMapApicBaseUnencrypted ();
   InitializeApicTimer (0, MAX_UINT32, TRUE, 5);
   DisableApicTimerInterrupt ();
 

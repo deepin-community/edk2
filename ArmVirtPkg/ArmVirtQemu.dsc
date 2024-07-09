@@ -31,6 +31,7 @@
   DEFINE SECURE_BOOT_ENABLE      = FALSE
   DEFINE TPM2_ENABLE             = FALSE
   DEFINE TPM2_CONFIG_ENABLE      = FALSE
+  DEFINE CAVIUM_ERRATUM_27456    = FALSE
 
   #
   # Network definition
@@ -48,9 +49,9 @@
 
 !include NetworkPkg/NetworkDefines.dsc.inc
 
-!include ArmVirtPkg/ArmVirt.dsc.inc
-
 !include MdePkg/MdeLibs.dsc.inc
+
+!include ArmVirtPkg/ArmVirt.dsc.inc
 
 [LibraryClasses.common]
   ArmLib|ArmPkg/Library/ArmLib/ArmBaseLib.inf
@@ -59,7 +60,7 @@
   # Virtio Support
   VirtioLib|OvmfPkg/Library/VirtioLib/VirtioLib.inf
   VirtioMmioDeviceLib|OvmfPkg/Library/VirtioMmioDeviceLib/VirtioMmioDeviceLib.inf
-  QemuFwCfgLib|OvmfPkg/Library/QemuFwCfgLib/QemuFwCfgLibMmio.inf
+  QemuFwCfgLib|OvmfPkg/Library/QemuFwCfgLib/QemuFwCfgMmioDxeLib.inf
   QemuFwCfgS3Lib|OvmfPkg/Library/QemuFwCfgS3Lib/BaseQemuFwCfgS3LibNull.inf
   QemuFwCfgSimpleParserLib|OvmfPkg/Library/QemuFwCfgSimpleParserLib/QemuFwCfgSimpleParserLib.inf
   QemuLoadImageLib|OvmfPkg/Library/GenericQemuLoadImageLib/GenericQemuLoadImageLib.inf
@@ -69,7 +70,7 @@
 
   CapsuleLib|MdeModulePkg/Library/DxeCapsuleLibNull/DxeCapsuleLibNull.inf
   BootLogoLib|MdeModulePkg/Library/BootLogoLib/BootLogoLib.inf
-  PlatformBootManagerLib|ArmVirtPkg/Library/PlatformBootManagerLib/PlatformBootManagerLib.inf
+  PlatformBootManagerLib|OvmfPkg/Library/PlatformBootManagerLibLight/PlatformBootManagerLib.inf
   PlatformBmPrintScLib|OvmfPkg/Library/PlatformBmPrintScLib/PlatformBmPrintScLib.inf
   CustomizedDisplayLib|MdeModulePkg/Library/CustomizedDisplayLib/CustomizedDisplayLib.inf
   FrameBufferBltLib|MdeModulePkg/Library/FrameBufferBltLib/FrameBufferBltLib.inf
@@ -106,7 +107,11 @@
   Tpm2DeviceLib|SecurityPkg/Library/Tpm2DeviceLibDTpm/Tpm2DeviceLibDTpm.inf
 !endif
 
+[LibraryClasses.AARCH64.PEIM]
+  ArmMmuLib|ArmPkg/Library/ArmMmuLib/ArmMmuPeiLib.inf
+
 [LibraryClasses.common.DXE_DRIVER]
+  AcpiPlatformLib|OvmfPkg/Library/AcpiPlatformLib/DxeAcpiPlatformLib.inf
   ReportStatusCodeLib|MdeModulePkg/Library/DxeReportStatusCodeLib/DxeReportStatusCodeLib.inf
 
 !if $(TPM2_ENABLE) == TRUE
@@ -117,7 +122,9 @@
   UefiScsiLib|MdePkg/Library/UefiScsiLib/UefiScsiLib.inf
 
 [BuildOptions]
-  GCC:*_*_AARCH64_CC_XIPFLAGS ==
+!if $(CAVIUM_ERRATUM_27456) == TRUE
+  GCC:*_*_AARCH64_PP_FLAGS = -DCAVIUM_ERRATUM_27456
+!endif
 
 !include NetworkPkg/NetworkBuildOptions.dsc.inc
 
@@ -173,7 +180,7 @@
 !if $(TTY_TERMINAL) == TRUE
   gEfiMdePkgTokenSpaceGuid.PcdDefaultTerminalType|4
   # Set terminal type to TtyTerm, the value encoded is EFI_TTY_TERM_GUID
-  gArmVirtTokenSpaceGuid.PcdTerminalTypeGuidBuffer|{0x80, 0x6d, 0x91, 0x7d, 0xb1, 0x5b, 0x8c, 0x45, 0xa4, 0x8f, 0xe2, 0x5f, 0xdd, 0x51, 0xef, 0x94}
+  gUefiOvmfPkgTokenSpaceGuid.PcdTerminalTypeGuidBuffer|{0x80, 0x6d, 0x91, 0x7d, 0xb1, 0x5b, 0x8c, 0x45, 0xa4, 0x8f, 0xe2, 0x5f, 0xdd, 0x51, 0xef, 0x94}
 !else
   gEfiMdePkgTokenSpaceGuid.PcdDefaultTerminalType|1
 !endif
@@ -192,7 +199,7 @@
   gArmTokenSpaceGuid.PcdSystemMemoryBase|0x40000000
 
   # initial location of the device tree blob passed by QEMU -- base of DRAM
-  gArmVirtTokenSpaceGuid.PcdDeviceTreeInitialBaseAddress|0x40000000
+  gUefiOvmfPkgTokenSpaceGuid.PcdDeviceTreeInitialBaseAddress|0x40000000
 
   gEfiMdeModulePkgTokenSpaceGuid.PcdResetOnMemoryTypeInformationChange|FALSE
   gEfiMdeModulePkgTokenSpaceGuid.PcdBootManagerMenuFile|{ 0x21, 0xaa, 0x2c, 0x46, 0x14, 0x76, 0x03, 0x45, 0x83, 0x6e, 0x8a, 0xb6, 0xf4, 0x66, 0x23, 0x31 }
@@ -244,6 +251,7 @@
   gArmTokenSpaceGuid.PcdArmArchTimerIntrNum|0x0
   gArmTokenSpaceGuid.PcdArmArchTimerVirtIntrNum|0x0
   gArmTokenSpaceGuid.PcdArmArchTimerHypIntrNum|0x0
+  gArmTokenSpaceGuid.PcdArmArchTimerHypVirtIntrNum|0x0
 
   #
   # ARM General Interrupt Controller
@@ -285,6 +293,10 @@
   gEfiNetworkPkgTokenSpaceGuid.PcdIPv4PXESupport|0x01
   gEfiNetworkPkgTokenSpaceGuid.PcdIPv6PXESupport|0x01
 
+  # whether to use HVC or SMC to issue monitor calls - this typically depends
+  # on the exception level at which the UEFI system firmware executes
+  gArmTokenSpaceGuid.PcdMonitorConduitHvc|TRUE
+
   #
   # TPM2 support
   #
@@ -300,7 +312,7 @@
 !endif
 
 [PcdsDynamicHii]
-  gArmVirtTokenSpaceGuid.PcdForceNoAcpi|L"ForceNoAcpi"|gArmVirtVariableGuid|0x0|FALSE|NV,BS
+  gUefiOvmfPkgTokenSpaceGuid.PcdForceNoAcpi|L"ForceNoAcpi"|gOvmfVariableGuid|0x0|FALSE|NV,BS
 
 !if $(TPM2_CONFIG_ENABLE) == TRUE
   gEfiSecurityPkgTokenSpaceGuid.PcdTcgPhysicalPresenceInterfaceVer|L"TCG2_VERSION"|gTcg2ConfigFormSetGuid|0x0|"1.3"|NV,BS
@@ -310,11 +322,7 @@
   gEfiMdePkgTokenSpaceGuid.PcdPlatformBootTimeOut|L"Timeout"|gEfiGlobalVariableGuid|0x0|5
 
 [LibraryClasses.common.PEI_CORE, LibraryClasses.common.PEIM]
-!if $(TPM2_ENABLE) == TRUE
   PcdLib|MdePkg/Library/PeiPcdLib/PeiPcdLib.inf
-!else
-  PcdLib|MdePkg/Library/BasePcdLibNull/BasePcdLibNull.inf
-!endif
 
 ################################################################################
 #
@@ -328,19 +336,14 @@
   ArmPlatformPkg/PrePeiCore/PrePeiCoreUniCore.inf
   MdeModulePkg/Core/Pei/PeiMain.inf
   ArmPlatformPkg/PlatformPei/PlatformPeim.inf
-  ArmVirtPkg/MemoryInitPei/MemoryInitPeim.inf {
-    <LibraryClasses>
-!if $(ARCH) == AARCH64
-      ArmMmuLib|ArmPkg/Library/ArmMmuLib/ArmMmuPeiLib.inf
-!endif
-  }
+  ArmVirtPkg/MemoryInitPei/MemoryInitPeim.inf
   ArmPkg/Drivers/CpuPei/CpuPei.inf
 
-!if $(TPM2_ENABLE) == TRUE
   MdeModulePkg/Universal/PCD/Pei/Pcd.inf {
     <LibraryClasses>
       PcdLib|MdePkg/Library/BasePcdLibNull/BasePcdLibNull.inf
   }
+!if $(TPM2_ENABLE) == TRUE
   MdeModulePkg/Universal/ResetSystemPei/ResetSystemPei.inf {
     <LibraryClasses>
       ResetSystemLib|ArmVirtPkg/Library/ArmVirtPsciResetSystemPeiLib/ArmVirtPsciResetSystemPeiLib.inf
@@ -423,8 +426,13 @@
     <LibraryClasses>
       NULL|ArmVirtPkg/Library/ArmVirtTimerFdtClientLib/ArmVirtTimerFdtClientLib.inf
   }
-  OvmfPkg/VirtNorFlashDxe/VirtNorFlashDxe.inf
+  OvmfPkg/VirtNorFlashDxe/VirtNorFlashDxe.inf {
+    <LibraryClasses>
+      # don't use unaligned CopyMem () on the UEFI varstore NOR flash region
+      BaseMemoryLib|MdePkg/Library/BaseMemoryLib/BaseMemoryLib.inf
+  }
   MdeModulePkg/Universal/WatchdogTimerDxe/WatchdogTimer.inf
+  SecurityPkg/RandomNumberGenerator/RngDxe/RngDxe.inf
 
   #
   # Status Code Routing
@@ -441,6 +449,7 @@
   OvmfPkg/VirtioScsiDxe/VirtioScsi.inf
   OvmfPkg/VirtioNetDxe/VirtioNet.inf
   OvmfPkg/VirtioRngDxe/VirtioRng.inf
+  OvmfPkg/VirtioSerialDxe/VirtioSerial.inf
 
   #
   # FAT filesystem + GPT/MBR partitioning + UDF filesystem + virtio-fs
@@ -516,7 +525,7 @@
   #
   # PCI support
   #
-  ArmPkg/Drivers/ArmPciCpuIo2Dxe/ArmPciCpuIo2Dxe.inf {
+  UefiCpuPkg/CpuMmio2Dxe/CpuMmio2Dxe.inf {
     <LibraryClasses>
       NULL|OvmfPkg/Fdt/FdtPciPcdProducerLib/FdtPciPcdProducerLib.inf
   }
@@ -547,6 +556,11 @@
   MdeModulePkg/Bus/Usb/UsbMassStorageDxe/UsbMassStorageDxe.inf
 
   #
+  # Hash2 Protocol Support
+  #
+  SecurityPkg/Hash2DxeCrypto/Hash2DxeCrypto.inf
+
+  #
   # TPM2 support
   #
 !if $(TPM2_ENABLE) == TRUE
@@ -569,7 +583,7 @@
   #
   # ACPI Support
   #
-  ArmVirtPkg/PlatformHasAcpiDtDxe/PlatformHasAcpiDtDxe.inf
+  OvmfPkg/PlatformHasAcpiDtDxe/PlatformHasAcpiDtDxe.inf
 [Components.AARCH64]
   MdeModulePkg/Universal/Acpi/BootGraphicsResourceTableDxe/BootGraphicsResourceTableDxe.inf
   OvmfPkg/AcpiPlatformDxe/AcpiPlatformDxe.inf {

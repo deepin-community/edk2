@@ -3,10 +3,6 @@
 
 Copyright (c) 2006 - 2019, Intel Corporation. All rights reserved.<BR>
 Copyright (c) 1985 - 2022, American Megatrends International LLC.<BR>
-<<<<<<< HEAD
-=======
-
->>>>>>> ace365b4e0 (MdeModulePkg/scsi :Coverity scan flags multiple issues in edk2-stable202205)
 SPDX-License-Identifier: BSD-2-Clause-Patent
 
 **/
@@ -1901,7 +1897,9 @@ Done:
   function shall return EFI_DEVICE_ERROR.
 
   @param  This                         Indicates a pointer to the calling context.
-  @param  MediaId                      ID of the medium to receive data from.
+  @param  MediaId                      ID of the medium to receive data from. If there is no
+                                       block IO protocol supported by the physical device, the
+                                       value of MediaId is undefined.
   @param  Timeout                      The timeout, in 100ns units, to use for the execution
                                        of the security protocol command. A Timeout value of 0
                                        means that this function will wait indefinitely for the
@@ -2033,7 +2031,7 @@ ScsiDiskReceiveData (
       goto Done;
     }
 
-    if ((ScsiDiskDevice->ScsiIo->IoAlign > 1) && !IS_ALIGNED (PayloadBuffer, ScsiDiskDevice->ScsiIo->IoAlign)) {
+    if ((ScsiDiskDevice->ScsiIo->IoAlign > 1) && !ADDRESS_IS_ALIGNED (PayloadBuffer, ScsiDiskDevice->ScsiIo->IoAlign)) {
       AlignedBuffer = AllocateAlignedBuffer (ScsiDiskDevice, PayloadBufferSize);
       if (AlignedBuffer == NULL) {
         Status = EFI_OUT_OF_RESOURCES;
@@ -2123,7 +2121,9 @@ Done:
   shall return EFI_DEVICE_ERROR.
 
   @param  This                         Indicates a pointer to the calling context.
-  @param  MediaId                      ID of the medium to receive data from.
+  @param  MediaId                      ID of the medium to receive data from. If there is no
+                                       block IO protocol supported by the physical device, the
+                                       value of MediaId is undefined.
   @param  Timeout                      The timeout, in 100ns units, to use for the execution
                                        of the security protocol command. A Timeout value of 0
                                        means that this function will wait indefinitely for the
@@ -2253,7 +2253,7 @@ ScsiDiskSendData (
       goto Done;
     }
 
-    if ((ScsiDiskDevice->ScsiIo->IoAlign > 1) && !IS_ALIGNED (PayloadBuffer, ScsiDiskDevice->ScsiIo->IoAlign)) {
+    if ((ScsiDiskDevice->ScsiIo->IoAlign > 1) && !ADDRESS_IS_ALIGNED (PayloadBuffer, ScsiDiskDevice->ScsiIo->IoAlign)) {
       AlignedBuffer = AllocateAlignedBuffer (ScsiDiskDevice, PayloadBufferSize);
       if (AlignedBuffer == NULL) {
         Status = EFI_OUT_OF_RESOURCES;
@@ -2597,7 +2597,7 @@ ScsiDiskInquiryDevice (
           DEBUG ((
             DEBUG_WARN,
             "%a: invalid PageLength (%u) in Supported VPD Pages page\n",
-            __FUNCTION__,
+            __func__,
             (UINT32)PageLength
             ));
           PageLength = 0;
@@ -2610,7 +2610,7 @@ ScsiDiskInquiryDevice (
           DEBUG ((
             DEBUG_WARN,
             "%a: Supported VPD Pages page doesn't start with code 0x%02x\n",
-            __FUNCTION__,
+            __func__,
             EFI_SCSI_PAGE_CODE_SUPPORTED_VPD
             ));
           PageLength = 0;
@@ -2630,7 +2630,7 @@ ScsiDiskInquiryDevice (
             DEBUG ((
               DEBUG_WARN,
               "%a: non-ascending code in Supported VPD Pages page @ %u\n",
-              __FUNCTION__,
+              __func__,
               Index
               ));
             Index      = 0;

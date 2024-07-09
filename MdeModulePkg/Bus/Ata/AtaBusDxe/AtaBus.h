@@ -76,7 +76,6 @@
 #define ATA_TASK_SIGNATURE      SIGNATURE_32 ('A', 'T', 'S', 'K')
 #define ATA_DEVICE_SIGNATURE    SIGNATURE_32 ('A', 'B', 'I', 'D')
 #define ATA_SUB_TASK_SIGNATURE  SIGNATURE_32 ('A', 'S', 'T', 'S')
-#define IS_ALIGNED(addr, size)  (((UINTN) (addr) & (size - 1)) == 0)
 
 //
 // ATA bus data structure for ATA controller
@@ -928,7 +927,9 @@ AtaDiskInfoWhichIde (
   function shall return EFI_DEVICE_ERROR.
 
   @param  This                         Indicates a pointer to the calling context.
-  @param  MediaId                      ID of the medium to receive data from.
+  @param  MediaId                      ID of the medium to receive data from. If there is no
+                                       block IO protocol supported by the physical device, the
+                                       value of MediaId is undefined.
   @param  Timeout                      The timeout, in 100ns units, to use for the execution
                                        of the security protocol command. A Timeout value of 0
                                        means that this function will wait indefinitely for the
@@ -1008,7 +1009,9 @@ AtaStorageSecurityReceiveData (
   shall return EFI_DEVICE_ERROR.
 
   @param  This                         Indicates a pointer to the calling context.
-  @param  MediaId                      ID of the medium to receive data from.
+  @param  MediaId                      ID of the medium to receive data from. If there is no
+                                       block IO protocol supported by the physical device, the
+                                       value of MediaId is undefined.
   @param  Timeout                      The timeout, in 100ns units, to use for the execution
                                        of the security protocol command. A Timeout value of 0
                                        means that this function will wait indefinitely for the

@@ -1,7 +1,7 @@
 /**@file
   Memory Detection for Virtual Machines.
 
-  Copyright (c) 2006 - 2016, Intel Corporation. All rights reserved.<BR>
+  Copyright (c) 2006 - 2024, Intel Corporation. All rights reserved.<BR>
   SPDX-License-Identifier: BSD-2-Clause-Patent
 
 Module Name:
@@ -26,6 +26,7 @@ Module Name:
 //
 #include <Library/BaseLib.h>
 #include <Library/BaseMemoryLib.h>
+#include <Library/CcProbeLib.h>
 #include <Library/DebugLib.h>
 #include <Library/HardwareInfoLib.h>
 #include <Library/HobLib.h>
@@ -42,6 +43,9 @@ Module Name:
 
 #include <Library/PlatformInitLib.h>
 
+#include <Guid/AcpiS3Context.h>
+#include <Guid/SmramMemoryReserve.h>
+
 #define MEGABYTE_SHIFT  20
 
 VOID
@@ -50,32 +54,7 @@ PlatformQemuUc32BaseInitialization (
   IN OUT EFI_HOB_PLATFORM_INFO  *PlatformInfoHob
   )
 {
-  UINT32  LowerMemorySize;
-
   if (PlatformInfoHob->HostBridgeDevId == 0xffff /* microvm */) {
-    return;
-  }
-
-  if (PlatformInfoHob->HostBridgeDevId == INTEL_Q35_MCH_DEVICE_ID) {
-    LowerMemorySize = PlatformGetSystemMemorySizeBelow4gb (PlatformInfoHob);
-    ASSERT (PcdGet64 (PcdPciExpressBaseAddress) <= MAX_UINT32);
-    ASSERT (PcdGet64 (PcdPciExpressBaseAddress) >= LowerMemorySize);
-
-    if (LowerMemorySize <= BASE_2GB) {
-      // Newer qemu with gigabyte aligned memory,
-      // 32-bit pci mmio window is 2G -> 4G then.
-      PlatformInfoHob->Uc32Base = BASE_2GB;
-    } else {
-      //
-      // On q35, the 32-bit area that we'll mark as UC, through variable MTRRs,
-      // starts at PcdPciExpressBaseAddress. The platform DSC is responsible for
-      // setting PcdPciExpressBaseAddress such that describing the
-      // [PcdPciExpressBaseAddress, 4GB) range require a very small number of
-      // variable MTRRs (preferably 1 or 2).
-      //
-      PlatformInfoHob->Uc32Base = (UINT32)PcdGet64 (PcdPciExpressBaseAddress);
-    }
-
     return;
   }
 
@@ -85,14 +64,24 @@ PlatformQemuUc32BaseInitialization (
     return;
   }
 
-  ASSERT (PlatformInfoHob->HostBridgeDevId == INTEL_82441_DEVICE_ID);
+  ASSERT (
+    PlatformInfoHob->HostBridgeDevId == INTEL_Q35_MCH_DEVICE_ID ||
+    PlatformInfoHob->HostBridgeDevId == INTEL_82441_DEVICE_ID
+    );
+
+  PlatformGetSystemMemorySizeBelow4gb (PlatformInfoHob);
+
+  if (PlatformInfoHob->HostBridgeDevId == INTEL_Q35_MCH_DEVICE_ID) {
+    ASSERT (PcdGet64 (PcdPciExpressBaseAddress) <= MAX_UINT32);
+    ASSERT (PcdGet64 (PcdPciExpressBaseAddress) >= PlatformInfoHob->LowMemory);
+  }
+
   //
-  // On i440fx, start with the [LowerMemorySize, 4GB) range. Make sure one
+  // Start with the [LowerMemorySize, 4GB) range. Make sure one
   // variable MTRR suffices by truncating the size to a whole power of two,
   // while keeping the end affixed to 4GB. This will round the base up.
   //
-  LowerMemorySize           = PlatformGetSystemMemorySizeBelow4gb (PlatformInfoHob);
-  PlatformInfoHob->Uc32Size = GetPowerOfTwo32 ((UINT32)(SIZE_4GB - LowerMemorySize));
+  PlatformInfoHob->Uc32Size = GetPowerOfTwo32 ((UINT32)(SIZE_4GB - PlatformInfoHob->LowMemory));
   PlatformInfoHob->Uc32Base = (UINT32)(SIZE_4GB - PlatformInfoHob->Uc32Size);
   //
   // Assuming that LowerMemorySize is at least 1 byte, Uc32Size is at most 2GB.
@@ -100,146 +89,172 @@ PlatformQemuUc32BaseInitialization (
   //
   ASSERT (PlatformInfoHob->Uc32Base >= BASE_2GB);
 
-  if (PlatformInfoHob->Uc32Base != LowerMemorySize) {
+  if (PlatformInfoHob->Uc32Base != PlatformInfoHob->LowMemory) {
     DEBUG ((
       DEBUG_VERBOSE,
       "%a: rounded UC32 base from 0x%x up to 0x%x, for "
       "an UC32 size of 0x%x\n",
-      __FUNCTION__,
-      LowerMemorySize,
+      __func__,
+      PlatformInfoHob->LowMemory,
       PlatformInfoHob->Uc32Base,
       PlatformInfoHob->Uc32Size
       ));
   }
 }
 
+typedef VOID (*E820_SCAN_CALLBACK) (
+  EFI_E820_ENTRY64       *E820Entry,
+  EFI_HOB_PLATFORM_INFO  *PlatformInfoHob
+  );
+
 /**
-  Iterate over the RAM entries in QEMU's fw_cfg E820 RAM map that start outside
-  of the 32-bit address range.
-
-  Find the highest exclusive >=4GB RAM address, or produce memory resource
-  descriptor HOBs for RAM entries that start at or above 4GB.
-
-  @param[out] MaxAddress  If MaxAddress is NULL, then PlatformScanOrAdd64BitE820Ram()
-                          produces memory resource descriptor HOBs for RAM
-                          entries that start at or above 4GB.
-
-                          Otherwise, MaxAddress holds the highest exclusive
-                          >=4GB RAM address on output. If QEMU's fw_cfg E820
-                          RAM map contains no RAM entry that starts outside of
-                          the 32-bit address range, then MaxAddress is exactly
-                          4GB on output.
-
-  @retval EFI_SUCCESS         The fw_cfg E820 RAM map was found and processed.
-
-  @retval EFI_PROTOCOL_ERROR  The RAM map was found, but its size wasn't a
-                              whole multiple of sizeof(EFI_E820_ENTRY64). No
-                              RAM entry was processed.
-
-  @return                     Error codes from QemuFwCfgFindFile(). No RAM
-                              entry was processed.
+  Store first address not used by e820 RAM entries in
+  PlatformInfoHob->FirstNonAddress
 **/
 STATIC
-EFI_STATUS
-PlatformScanOrAdd64BitE820Ram (
-  IN BOOLEAN  AddHighHob,
-  OUT UINT64  *LowMemory OPTIONAL,
-  OUT UINT64  *MaxAddress OPTIONAL
+VOID
+PlatformGetFirstNonAddressCB (
+  IN     EFI_E820_ENTRY64       *E820Entry,
+  IN OUT EFI_HOB_PLATFORM_INFO  *PlatformInfoHob
   )
 {
-  EFI_STATUS            Status;
-  FIRMWARE_CONFIG_ITEM  FwCfgItem;
-  UINTN                 FwCfgSize;
-  EFI_E820_ENTRY64      E820Entry;
-  UINTN                 Processed;
+  UINT64  Candidate;
 
-  Status = QemuFwCfgFindFile ("etc/e820", &FwCfgItem, &FwCfgSize);
-  if (EFI_ERROR (Status)) {
-    return Status;
+  if (E820Entry->Type != EfiAcpiAddressRangeMemory) {
+    return;
   }
 
-  if (FwCfgSize % sizeof E820Entry != 0) {
-    return EFI_PROTOCOL_ERROR;
+  Candidate = E820Entry->BaseAddr + E820Entry->Length;
+  if (PlatformInfoHob->FirstNonAddress < Candidate) {
+    DEBUG ((DEBUG_INFO, "%a: FirstNonAddress=0x%Lx\n", __func__, Candidate));
+    PlatformInfoHob->FirstNonAddress = Candidate;
+  }
+}
+
+/**
+  Store the low (below 4G) memory size in
+  PlatformInfoHob->LowMemory
+**/
+STATIC
+VOID
+PlatformGetLowMemoryCB (
+  IN     EFI_E820_ENTRY64       *E820Entry,
+  IN OUT EFI_HOB_PLATFORM_INFO  *PlatformInfoHob
+  )
+{
+  UINT64  Candidate;
+
+  if (E820Entry->Type != EfiAcpiAddressRangeMemory) {
+    return;
   }
 
-  if (LowMemory != NULL) {
-    *LowMemory = 0;
+  Candidate = E820Entry->BaseAddr + E820Entry->Length;
+  if (Candidate >= BASE_4GB) {
+    return;
   }
 
-  if (MaxAddress != NULL) {
-    *MaxAddress = BASE_4GB;
+  if (PlatformInfoHob->LowMemory < Candidate) {
+    DEBUG ((DEBUG_INFO, "%a: LowMemory=0x%Lx\n", __func__, Candidate));
+    PlatformInfoHob->LowMemory = (UINT32)Candidate;
   }
+}
 
-  QemuFwCfgSelectItem (FwCfgItem);
-  for (Processed = 0; Processed < FwCfgSize; Processed += sizeof E820Entry) {
-    QemuFwCfgReadBytes (sizeof E820Entry, &E820Entry);
-    DEBUG ((
-      DEBUG_VERBOSE,
-      "%a: Base=0x%Lx Length=0x%Lx Type=%u\n",
-      __FUNCTION__,
-      E820Entry.BaseAddr,
-      E820Entry.Length,
-      E820Entry.Type
-      ));
-    if (E820Entry.Type == EfiAcpiAddressRangeMemory) {
-      if (AddHighHob && (E820Entry.BaseAddr >= BASE_4GB)) {
-        UINT64  Base;
-        UINT64  End;
+/**
+  Create HOBs for reservations and RAM (except low memory).
+**/
+STATIC
+VOID
+PlatformAddHobCB (
+  IN     EFI_E820_ENTRY64       *E820Entry,
+  IN OUT EFI_HOB_PLATFORM_INFO  *PlatformInfoHob
+  )
+{
+  UINT64  Base, End;
 
+  Base = E820Entry->BaseAddr;
+  End  = E820Entry->BaseAddr + E820Entry->Length;
+
+  switch (E820Entry->Type) {
+    case EfiAcpiAddressRangeMemory:
+      if (Base >= BASE_4GB) {
         //
         // Round up the start address, and round down the end address.
         //
-        Base = ALIGN_VALUE (E820Entry.BaseAddr, (UINT64)EFI_PAGE_SIZE);
-        End  = (E820Entry.BaseAddr + E820Entry.Length) &
-               ~(UINT64)EFI_PAGE_MASK;
+        Base = ALIGN_VALUE (Base, (UINT64)EFI_PAGE_SIZE);
+        End  = End & ~(UINT64)EFI_PAGE_MASK;
         if (Base < End) {
+          DEBUG ((DEBUG_INFO, "%a: HighMemory [0x%Lx, 0x%Lx)\n", __func__, Base, End));
           PlatformAddMemoryRangeHob (Base, End);
-          DEBUG ((
-            DEBUG_VERBOSE,
-            "%a: PlatformAddMemoryRangeHob [0x%Lx, 0x%Lx)\n",
-            __FUNCTION__,
-            Base,
-            End
-            ));
         }
       }
 
-      if (MaxAddress || LowMemory) {
-        UINT64  Candidate;
+      break;
+    case EfiAcpiAddressRangeReserved:
+      BuildResourceDescriptorHob (EFI_RESOURCE_MEMORY_RESERVED, 0, Base, End - Base);
+      DEBUG ((DEBUG_INFO, "%a: Reserved [0x%Lx, 0x%Lx)\n", __func__, Base, End));
+      break;
+    default:
+      DEBUG ((
+        DEBUG_WARN,
+        "%a: Type %u [0x%Lx, 0x%Lx) (NOT HANDLED)\n",
+        __func__,
+        E820Entry->Type,
+        Base,
+        End
+        ));
+      break;
+  }
+}
 
-        Candidate = E820Entry.BaseAddr + E820Entry.Length;
-        if (MaxAddress && (Candidate > *MaxAddress)) {
-          *MaxAddress = Candidate;
-          DEBUG ((
-            DEBUG_VERBOSE,
-            "%a: MaxAddress=0x%Lx\n",
-            __FUNCTION__,
-            *MaxAddress
-            ));
-        }
+/**
+  Check whenever the 64bit PCI MMIO window overlaps with a reservation
+  from qemu.  If so move down the MMIO window to resolve the conflict.
 
-        if (LowMemory && (Candidate > *LowMemory) && (Candidate < BASE_4GB)) {
-          *LowMemory = Candidate;
-          DEBUG ((
-            DEBUG_VERBOSE,
-            "%a: LowMemory=0x%Lx\n",
-            __FUNCTION__,
-            *LowMemory
-            ));
-        }
-      }
-    }
+  This happens on (virtual) AMD machines with 1TB address space,
+  because the AMD IOMMU uses an address window just below 1TB.
+**/
+STATIC
+VOID
+PlatformReservationConflictCB (
+  IN     EFI_E820_ENTRY64       *E820Entry,
+  IN OUT EFI_HOB_PLATFORM_INFO  *PlatformInfoHob
+  )
+{
+  UINT64  IntersectionBase;
+  UINT64  IntersectionEnd;
+  UINT64  NewBase;
+
+  IntersectionBase = MAX (
+                       E820Entry->BaseAddr,
+                       PlatformInfoHob->PcdPciMmio64Base
+                       );
+  IntersectionEnd = MIN (
+                      E820Entry->BaseAddr + E820Entry->Length,
+                      PlatformInfoHob->PcdPciMmio64Base +
+                      PlatformInfoHob->PcdPciMmio64Size
+                      );
+
+  if (IntersectionBase >= IntersectionEnd) {
+    return;  // no overlap
   }
 
-  return EFI_SUCCESS;
+  NewBase = E820Entry->BaseAddr - PlatformInfoHob->PcdPciMmio64Size;
+  NewBase = NewBase & ~(PlatformInfoHob->PcdPciMmio64Size - 1);
+
+  DEBUG ((
+    DEBUG_INFO,
+    "%a: move mmio: 0x%Lx => %Lx\n",
+    __func__,
+    PlatformInfoHob->PcdPciMmio64Base,
+    NewBase
+    ));
+  PlatformInfoHob->PcdPciMmio64Base = NewBase;
 }
 
 /**
   Returns PVH memmap
-
   @param Entries      Pointer to PVH memmap
   @param Count        Number of entries
-
   @return EFI_STATUS
 **/
 EFI_STATUS
@@ -260,6 +275,92 @@ GetPvhMemmapEntries (
 
   *Entries = (struct hvm_memmap_table_entry *)(UINTN)pvh_start_info->memmap_paddr;
   *Count   = pvh_start_info->memmap_entries;
+
+  return EFI_SUCCESS;
+}
+
+STATIC
+EFI_STATUS
+PlatformScanE820Pvh (
+  IN      E820_SCAN_CALLBACK     Callback,
+  IN OUT  EFI_HOB_PLATFORM_INFO  *PlatformInfoHob
+  )
+{
+  struct hvm_memmap_table_entry  *Memmap;
+  UINT32                         MemmapEntriesCount;
+  struct hvm_memmap_table_entry  *Entry;
+  EFI_E820_ENTRY64               E820Entry;
+  EFI_STATUS                     Status;
+  UINT32                         Loop;
+
+  Status = GetPvhMemmapEntries (&Memmap, &MemmapEntriesCount);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  for (Loop = 0; Loop < MemmapEntriesCount; Loop++) {
+    Entry = Memmap + Loop;
+
+    if (Entry->type == XEN_HVM_MEMMAP_TYPE_RAM) {
+      E820Entry.BaseAddr = Entry->addr;
+      E820Entry.Length   = Entry->size;
+      E820Entry.Type     = Entry->type;
+      Callback (&E820Entry, PlatformInfoHob);
+    }
+  }
+
+  return EFI_SUCCESS;
+}
+
+/**
+  Iterate over the entries in QEMU's fw_cfg E820 RAM map, call the
+  passed callback for each entry.
+
+  @param[in] Callback              The callback function to be called.
+
+  @param[in out]  PlatformInfoHob  PlatformInfo struct which is passed
+                                   through to the callback.
+
+  @retval EFI_SUCCESS              The fw_cfg E820 RAM map was found and processed.
+
+  @retval EFI_PROTOCOL_ERROR       The RAM map was found, but its size wasn't a
+                                   whole multiple of sizeof(EFI_E820_ENTRY64). No
+                                   RAM entry was processed.
+
+  @return                          Error codes from QemuFwCfgFindFile(). No RAM
+                                   entry was processed.
+**/
+STATIC
+EFI_STATUS
+PlatformScanE820 (
+  IN      E820_SCAN_CALLBACK     Callback,
+  IN OUT  EFI_HOB_PLATFORM_INFO  *PlatformInfoHob
+  )
+{
+  EFI_STATUS            Status;
+  FIRMWARE_CONFIG_ITEM  FwCfgItem;
+  UINTN                 FwCfgSize;
+  EFI_E820_ENTRY64      E820Entry;
+  UINTN                 Processed;
+
+  if (PlatformInfoHob->HostBridgeDevId == CLOUDHV_DEVICE_ID) {
+    return PlatformScanE820Pvh (Callback, PlatformInfoHob);
+  }
+
+  Status = QemuFwCfgFindFile ("etc/e820", &FwCfgItem, &FwCfgSize);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  if (FwCfgSize % sizeof E820Entry != 0) {
+    return EFI_PROTOCOL_ERROR;
+  }
+
+  QemuFwCfgSelectItem (FwCfgItem);
+  for (Processed = 0; Processed < FwCfgSize; Processed += sizeof E820Entry) {
+    QemuFwCfgReadBytes (sizeof E820Entry, &E820Entry);
+    Callback (&E820Entry, PlatformInfoHob);
+  }
 
   return EFI_SUCCESS;
 }
@@ -301,25 +402,27 @@ GetHighestSystemMemoryAddressFromPvhMemmap (
   return HighestAddress;
 }
 
-UINT32
+VOID
 EFIAPI
 PlatformGetSystemMemorySizeBelow4gb (
   IN EFI_HOB_PLATFORM_INFO  *PlatformInfoHob
   )
 {
   EFI_STATUS  Status;
-  UINT64      LowerMemorySize = 0;
   UINT8       Cmos0x34;
   UINT8       Cmos0x35;
 
-  if (PlatformInfoHob->HostBridgeDevId == CLOUDHV_DEVICE_ID) {
+  if ((PlatformInfoHob->HostBridgeDevId == CLOUDHV_DEVICE_ID) &&
+      (CcProbe () != CcGuestTypeIntelTdx))
+  {
     // Get the information from PVH memmap
-    return (UINT32)GetHighestSystemMemoryAddressFromPvhMemmap (TRUE);
+    PlatformInfoHob->LowMemory = (UINT32)GetHighestSystemMemoryAddressFromPvhMemmap (TRUE);
+    return;
   }
 
-  Status = PlatformScanOrAdd64BitE820Ram (FALSE, &LowerMemorySize, NULL);
-  if ((Status == EFI_SUCCESS) && (LowerMemorySize > 0)) {
-    return (UINT32)LowerMemorySize;
+  Status = PlatformScanE820 (PlatformGetLowMemoryCB, PlatformInfoHob);
+  if (!EFI_ERROR (Status) && (PlatformInfoHob->LowMemory > 0)) {
+    return;
   }
 
   //
@@ -334,7 +437,7 @@ PlatformGetSystemMemorySizeBelow4gb (
   Cmos0x34 = (UINT8)PlatformCmosRead8 (0x34);
   Cmos0x35 = (UINT8)PlatformCmosRead8 (0x35);
 
-  return (UINT32)(((UINTN)((Cmos0x35 << 8) + Cmos0x34) << 16) + SIZE_16MB);
+  PlatformInfoHob->LowMemory = (UINT32)(((UINTN)((Cmos0x35 << 8) + Cmos0x34) << 16) + SIZE_16MB);
 }
 
 STATIC
@@ -365,22 +468,16 @@ PlatformGetSystemMemorySizeAbove4gb (
   Return the highest address that DXE could possibly use, plus one.
 **/
 STATIC
-UINT64
+VOID
 PlatformGetFirstNonAddress (
   IN OUT  EFI_HOB_PLATFORM_INFO  *PlatformInfoHob
   )
 {
-  UINT64                FirstNonAddress;
   UINT32                FwCfgPciMmio64Mb;
   EFI_STATUS            Status;
   FIRMWARE_CONFIG_ITEM  FwCfgItem;
   UINTN                 FwCfgSize;
   UINT64                HotPlugMemoryEnd;
-
-  //
-  // set FirstNonAddress to suppress incorrect compiler/analyzer warnings
-  //
-  FirstNonAddress = 0;
 
   //
   // If QEMU presents an E820 map, then get the highest exclusive >=4GB RAM
@@ -389,9 +486,10 @@ PlatformGetFirstNonAddress (
   // Otherwise, get the flat size of the memory above 4GB from the CMOS (which
   // can only express a size smaller than 1TB), and add it to 4GB.
   //
-  Status = PlatformScanOrAdd64BitE820Ram (FALSE, NULL, &FirstNonAddress);
+  PlatformInfoHob->FirstNonAddress = BASE_4GB;
+  Status                           = PlatformScanE820 (PlatformGetFirstNonAddressCB, PlatformInfoHob);
   if (EFI_ERROR (Status)) {
-    FirstNonAddress = BASE_4GB + PlatformGetSystemMemorySizeAbove4gb ();
+    PlatformInfoHob->FirstNonAddress = BASE_4GB + PlatformGetSystemMemorySizeAbove4gb ();
   }
 
   //
@@ -401,7 +499,7 @@ PlatformGetFirstNonAddress (
   //
  #ifdef MDE_CPU_IA32
   if (!FeaturePcdGet (PcdDxeIplSwitchToLongMode)) {
-    return FirstNonAddress;
+    return;
   }
 
  #endif
@@ -435,7 +533,7 @@ PlatformGetFirstNonAddress (
       DEBUG ((
         DEBUG_WARN,
         "%a: ignoring malformed 64-bit PCI host aperture size from fw_cfg\n",
-        __FUNCTION__
+        __func__
         ));
       break;
   }
@@ -445,7 +543,7 @@ PlatformGetFirstNonAddress (
       DEBUG ((
         DEBUG_INFO,
         "%a: disabling 64-bit PCI host aperture\n",
-        __FUNCTION__
+        __func__
         ));
     }
 
@@ -454,7 +552,7 @@ PlatformGetFirstNonAddress (
     // determines the highest address plus one. The memory hotplug area (see
     // below) plays no role for the firmware in this case.
     //
-    return FirstNonAddress;
+    return;
   }
 
   //
@@ -474,19 +572,19 @@ PlatformGetFirstNonAddress (
     DEBUG ((
       DEBUG_VERBOSE,
       "%a: HotPlugMemoryEnd=0x%Lx\n",
-      __FUNCTION__,
+      __func__,
       HotPlugMemoryEnd
       ));
 
-    ASSERT (HotPlugMemoryEnd >= FirstNonAddress);
-    FirstNonAddress = HotPlugMemoryEnd;
+    ASSERT (HotPlugMemoryEnd >= PlatformInfoHob->FirstNonAddress);
+    PlatformInfoHob->FirstNonAddress = HotPlugMemoryEnd;
   }
 
   //
   // SeaBIOS aligns both boundaries of the 64-bit PCI host aperture to 1GB, so
   // that the host can map it with 1GB hugepages. Follow suit.
   //
-  PlatformInfoHob->PcdPciMmio64Base = ALIGN_VALUE (FirstNonAddress, (UINT64)SIZE_1GB);
+  PlatformInfoHob->PcdPciMmio64Base = ALIGN_VALUE (PlatformInfoHob->FirstNonAddress, (UINT64)SIZE_1GB);
   PlatformInfoHob->PcdPciMmio64Size = ALIGN_VALUE (PlatformInfoHob->PcdPciMmio64Size, (UINT64)SIZE_1GB);
 
   //
@@ -500,8 +598,8 @@ PlatformGetFirstNonAddress (
   //
   // The useful address space ends with the 64-bit PCI host aperture.
   //
-  FirstNonAddress = PlatformInfoHob->PcdPciMmio64Base + PlatformInfoHob->PcdPciMmio64Size;
-  return FirstNonAddress;
+  PlatformInfoHob->FirstNonAddress = PlatformInfoHob->PcdPciMmio64Base + PlatformInfoHob->PcdPciMmio64Size;
+  return;
 }
 
 /*
@@ -533,11 +631,14 @@ PlatformAddressWidthFromCpuid (
   IN     BOOLEAN                QemuQuirk
   )
 {
-  UINT32   RegEax, RegEbx, RegEcx, RegEdx, Max;
-  UINT8    PhysBits;
-  CHAR8    Signature[13] = { 0 };
-  BOOLEAN  Valid         = FALSE;
-  BOOLEAN  Page1GSupport = FALSE;
+  UINT32    RegEax, RegEbx, RegEcx, RegEdx, Max;
+  UINT8     PhysBits;
+  CHAR8     Signature[13];
+  IA32_CR4  Cr4;
+  BOOLEAN   Valid         = FALSE;
+  BOOLEAN   Page1GSupport = FALSE;
+
+  ZeroMem (Signature, sizeof (Signature));
 
   AsmCpuid (0x80000000, &RegEax, &RegEbx, &RegEcx, &RegEdx);
   *(UINT32 *)(Signature + 0) = RegEbx;
@@ -573,31 +674,63 @@ PlatformAddressWidthFromCpuid (
     }
   }
 
+  Cr4.UintN = AsmReadCr4 ();
+
   DEBUG ((
     DEBUG_INFO,
-    "%a: Signature: '%a', PhysBits: %d, QemuQuirk: %a, Valid: %a\n",
-    __FUNCTION__,
+    "%a: Signature: '%a', PhysBits: %d, QemuQuirk: %a, la57: %a, Valid: %a\n",
+    __func__,
     Signature,
     PhysBits,
     QemuQuirk ? "On" : "Off",
+    Cr4.Bits.LA57 ? "On" : "Off",
     Valid ? "Yes" : "No"
     ));
 
   if (Valid) {
-    if (PhysBits > 47) {
-      /*
-       * Avoid 5-level paging altogether for now, which limits
-       * PhysBits to 48.  Also avoid using address bit 48, due to sign
-       * extension we can't identity-map these addresses (and lots of
-       * places in edk2 assume we have everything identity-mapped).
-       * So the actual limit is 47.
-       */
-      DEBUG ((DEBUG_INFO, "%a: limit PhysBits to 47 (avoid 5-level paging)\n", __func__));
-      PhysBits = 47;
+    /*
+     * Due to the sign extension we can use only the lower half of the
+     * virtual address space to identity-map physical address space,
+     * which gives us a 47 bit wide address space with 4 paging levels
+     * and a 56 bit wide address space with 5 paging levels.
+     */
+    if (Cr4.Bits.LA57) {
+      if (PhysBits > 48) {
+        /*
+         * Some Intel CPUs support 5-level paging, have more than 48
+         * phys-bits but support only 4-level EPT, which effectively
+         * limits guest phys-bits to 48.
+         *
+         * AMD Processors have a different but somewhat related
+         * problem: They can handle guest phys-bits larger than 48
+         * only in case the host runs in 5-level paging mode.
+         *
+         * Until we have some way to communicate that kind of
+         * limitations from hypervisor to guest, limit phys-bits
+         * to 48 unconditionally.
+         */
+        DEBUG ((DEBUG_INFO, "%a: limit PhysBits to 48 (5-level paging)\n", __func__));
+        PhysBits = 48;
+      }
+    } else {
+      if (PhysBits > 46) {
+        /*
+         * Some older linux kernels apparently have problems handling
+         * phys-bits > 46 correctly, so use that instead of 47 as
+         * limit.
+         */
+        DEBUG ((DEBUG_INFO, "%a: limit PhysBits to 46 (4-level paging)\n", __func__));
+        PhysBits = 46;
+      }
     }
 
     if (!Page1GSupport && (PhysBits > 40)) {
       DEBUG ((DEBUG_INFO, "%a: limit PhysBits to 40 (no 1G pages available)\n", __func__));
+      PhysBits = 40;
+    }
+
+    if (!FixedPcdGetBool (PcdUse1GPageTable) && (PhysBits > 40)) {
+      DEBUG ((DEBUG_INFO, "%a: limit PhysBits to 40 (PcdUse1GPageTable is false)\n", __func__));
       PhysBits = 40;
     }
 
@@ -625,6 +758,7 @@ PlatformDynamicMmioWindow (
     DEBUG ((DEBUG_INFO, "%a:   MMIO Space 0x%Lx (%Ld GB)\n", __func__, MmioSpace, RShiftU64 (MmioSpace, 30)));
     PlatformInfoHob->PcdPciMmio64Size = MmioSpace;
     PlatformInfoHob->PcdPciMmio64Base = AddrSpace - MmioSpace;
+    PlatformScanE820 (PlatformReservationConflictCB, PlatformInfoHob);
   } else {
     DEBUG ((DEBUG_INFO, "%a: using classic mmio window\n", __func__));
   }
@@ -720,7 +854,7 @@ PlatformScanHostProvided64BitPciMmioEnd (
       DEBUG ((
         DEBUG_ERROR,
         "%a: ignoring malformed hardware information from fw_cfg\n",
-        __FUNCTION__
+        __func__
         ));
       *PciMmioAddressEnd = 0;
       return Status;
@@ -743,7 +877,7 @@ PlatformScanHostProvided64BitPciMmioEnd (
     DEBUG ((
       DEBUG_INFO,
       "%a: Pci64End=0x%Lx\n",
-      __FUNCTION__,
+      __func__,
       *PciMmioAddressEnd
       ));
 
@@ -762,12 +896,23 @@ PlatformAddressWidthInitialization (
   IN OUT EFI_HOB_PLATFORM_INFO  *PlatformInfoHob
   )
 {
-  UINT64      FirstNonAddress;
   UINT8       PhysMemAddressWidth;
   EFI_STATUS  Status;
 
   if (PlatformInfoHob->HostBridgeDevId == 0xffff /* microvm */) {
     PlatformAddressWidthFromCpuid (PlatformInfoHob, FALSE);
+    return;
+  } else if (PlatformInfoHob->HostBridgeDevId == CLOUDHV_DEVICE_ID) {
+    PlatformInfoHob->FirstNonAddress = BASE_4GB;
+    Status                           = PlatformScanE820 (PlatformGetFirstNonAddressCB, PlatformInfoHob);
+    if (EFI_ERROR (Status)) {
+      PlatformInfoHob->FirstNonAddress = BASE_4GB + PlatformGetSystemMemorySizeAbove4gb ();
+    }
+
+    PlatformInfoHob->PcdPciMmio64Base = PlatformInfoHob->FirstNonAddress;
+    PlatformAddressWidthFromCpuid (PlatformInfoHob, FALSE);
+    PlatformInfoHob->PcdPciMmio64Size = PlatformInfoHob->FirstNonAddress - PlatformInfoHob->PcdPciMmio64Base;
+
     return;
   }
 
@@ -775,7 +920,7 @@ PlatformAddressWidthInitialization (
   // First scan host-provided hardware information to assess if the address
   // space is already known. If so, guest must use those values.
   //
-  Status = PlatformScanHostProvided64BitPciMmioEnd (&FirstNonAddress);
+  Status = PlatformScanHostProvided64BitPciMmioEnd (&PlatformInfoHob->FirstNonAddress);
 
   if (EFI_ERROR (Status)) {
     //
@@ -787,13 +932,12 @@ PlatformAddressWidthInitialization (
     // The DXL IPL keys off of the physical address bits advertized in the CPU
     // HOB. To conserve memory, we calculate the minimum address width here.
     //
-    FirstNonAddress = PlatformGetFirstNonAddress (PlatformInfoHob);
+    PlatformGetFirstNonAddress (PlatformInfoHob);
   }
 
   PlatformAddressWidthFromCpuid (PlatformInfoHob, TRUE);
   if (PlatformInfoHob->PhysMemAddressWidth != 0) {
     // physical address width is known
-    PlatformInfoHob->FirstNonAddress = FirstNonAddress;
     PlatformDynamicMmioWindow (PlatformInfoHob);
     return;
   }
@@ -804,13 +948,13 @@ PlatformAddressWidthInitialization (
   //   -> try be conservstibe to stay below the guaranteed minimum of
   //      36 phys bits (aka 64 GB).
   //
-  PhysMemAddressWidth = (UINT8)HighBitSet64 (FirstNonAddress);
+  PhysMemAddressWidth = (UINT8)HighBitSet64 (PlatformInfoHob->FirstNonAddress);
 
   //
   // If FirstNonAddress is not an integral power of two, then we need an
   // additional bit.
   //
-  if ((FirstNonAddress & (FirstNonAddress - 1)) != 0) {
+  if ((PlatformInfoHob->FirstNonAddress & (PlatformInfoHob->FirstNonAddress - 1)) != 0) {
     ++PhysMemAddressWidth;
   }
 
@@ -838,8 +982,66 @@ PlatformAddressWidthInitialization (
   ASSERT (PhysMemAddressWidth <= 48);
  #endif
 
-  PlatformInfoHob->FirstNonAddress     = FirstNonAddress;
   PlatformInfoHob->PhysMemAddressWidth = PhysMemAddressWidth;
+}
+
+/**
+  Create gEfiSmmSmramMemoryGuid HOB defined in the PI specification Vol. 3,
+  section 5, which is used to describe the SMRAM memory regions supported
+  by the platform.
+
+  @param[in] StartAddress      StartAddress of smram.
+  @param[in] Size              Size of smram.
+
+**/
+STATIC
+VOID
+CreateSmmSmramMemoryHob (
+  IN EFI_PHYSICAL_ADDRESS  StartAddress,
+  IN UINT32                Size
+  )
+{
+  UINTN                           BufferSize;
+  UINT8                           SmramRanges;
+  EFI_PEI_HOB_POINTERS            Hob;
+  EFI_SMRAM_HOB_DESCRIPTOR_BLOCK  *SmramHobDescriptorBlock;
+  VOID                            *GuidHob;
+
+  SmramRanges = 2;
+  BufferSize  = sizeof (EFI_SMRAM_HOB_DESCRIPTOR_BLOCK) + (SmramRanges - 1) * sizeof (EFI_SMRAM_DESCRIPTOR);
+
+  Hob.Raw = BuildGuidHob (
+              &gEfiSmmSmramMemoryGuid,
+              BufferSize
+              );
+  ASSERT (Hob.Raw);
+
+  SmramHobDescriptorBlock                             = (EFI_SMRAM_HOB_DESCRIPTOR_BLOCK *)(Hob.Raw);
+  SmramHobDescriptorBlock->NumberOfSmmReservedRegions = SmramRanges;
+
+  //
+  // 1. Create first SMRAM descriptor, which contains data structures used in S3 resume.
+  // One page is enough for the data structure
+  //
+  SmramHobDescriptorBlock->Descriptor[0].PhysicalStart = StartAddress;
+  SmramHobDescriptorBlock->Descriptor[0].CpuStart      = StartAddress;
+  SmramHobDescriptorBlock->Descriptor[0].PhysicalSize  = EFI_PAGE_SIZE;
+  SmramHobDescriptorBlock->Descriptor[0].RegionState   = EFI_SMRAM_CLOSED | EFI_CACHEABLE | EFI_ALLOCATED;
+
+  //
+  // 1.1 Create gEfiAcpiVariableGuid according SmramHobDescriptorBlock->Descriptor[0] since it's used in S3 resume.
+  //
+  GuidHob = BuildGuidHob (&gEfiAcpiVariableGuid, sizeof (EFI_SMRAM_DESCRIPTOR));
+  ASSERT (GuidHob != NULL);
+  CopyMem (GuidHob, &SmramHobDescriptorBlock->Descriptor[0], sizeof (EFI_SMRAM_DESCRIPTOR));
+
+  //
+  // 2. Create second SMRAM descriptor, which is free and will be used by SMM foundation.
+  //
+  SmramHobDescriptorBlock->Descriptor[1].PhysicalStart = SmramHobDescriptorBlock->Descriptor[0].PhysicalStart + EFI_PAGE_SIZE;
+  SmramHobDescriptorBlock->Descriptor[1].CpuStart      = SmramHobDescriptorBlock->Descriptor[0].CpuStart + EFI_PAGE_SIZE;
+  SmramHobDescriptorBlock->Descriptor[1].PhysicalSize  = Size - EFI_PAGE_SIZE;
+  SmramHobDescriptorBlock->Descriptor[1].RegionState   = EFI_SMRAM_CLOSED | EFI_CACHEABLE;
 }
 
 STATIC
@@ -878,66 +1080,60 @@ PlatformQemuInitializeRam (
   IN EFI_HOB_PLATFORM_INFO  *PlatformInfoHob
   )
 {
-  UINT64         LowerMemorySize;
   UINT64         UpperMemorySize;
   MTRR_SETTINGS  MtrrSettings;
   EFI_STATUS     Status;
 
-  DEBUG ((DEBUG_INFO, "%a called\n", __FUNCTION__));
+  DEBUG ((DEBUG_INFO, "%a called\n", __func__));
 
   //
   // Determine total memory size available
   //
-  LowerMemorySize = PlatformGetSystemMemorySizeBelow4gb (PlatformInfoHob);
+  PlatformGetSystemMemorySizeBelow4gb (PlatformInfoHob);
 
-  if (PlatformInfoHob->BootMode == BOOT_ON_S3_RESUME) {
+  //
+  // CpuMpPei saves the original contents of the borrowed area in permanent
+  // PEI RAM, in a backup buffer allocated with the normal PEI services.
+  // CpuMpPei restores the original contents ("returns" the borrowed area) at
+  // End-of-PEI. End-of-PEI in turn is emitted by S3Resume2Pei before
+  // transferring control to the OS's wakeup vector in the FACS.
+  //
+  // We expect any other PEIMs that "borrow" memory similarly to CpuMpPei to
+  // restore the original contents. Furthermore, we expect all such PEIMs
+  // (CpuMpPei included) to claim the borrowed areas by producing memory
+  // allocation HOBs, and to honor preexistent memory allocation HOBs when
+  // looking for an area to borrow.
+  //
+  QemuInitializeRamBelow1gb (PlatformInfoHob);
+
+  if (PlatformInfoHob->SmmSmramRequire) {
+    UINT32                TsegSize;
+    EFI_PHYSICAL_ADDRESS  TsegBase;
+
+    TsegSize = PlatformInfoHob->Q35TsegMbytes * SIZE_1MB;
+    TsegBase = PlatformInfoHob->LowMemory - TsegSize;
+    PlatformAddMemoryRangeHob (BASE_1MB, TsegBase);
+    PlatformAddReservedMemoryBaseSizeHob (
+      TsegBase,
+      TsegSize,
+      TRUE
+      );
+
     //
-    // Create the following memory HOB as an exception on the S3 boot path.
+    // Create gEfiSmmSmramMemoryGuid HOB
     //
-    // Normally we'd create memory HOBs only on the normal boot path. However,
-    // CpuMpPei specifically needs such a low-memory HOB on the S3 path as
-    // well, for "borrowing" a subset of it temporarily, for the AP startup
-    // vector.
-    //
-    // CpuMpPei saves the original contents of the borrowed area in permanent
-    // PEI RAM, in a backup buffer allocated with the normal PEI services.
-    // CpuMpPei restores the original contents ("returns" the borrowed area) at
-    // End-of-PEI. End-of-PEI in turn is emitted by S3Resume2Pei before
-    // transferring control to the OS's wakeup vector in the FACS.
-    //
-    // We expect any other PEIMs that "borrow" memory similarly to CpuMpPei to
-    // restore the original contents. Furthermore, we expect all such PEIMs
-    // (CpuMpPei included) to claim the borrowed areas by producing memory
-    // allocation HOBs, and to honor preexistent memory allocation HOBs when
-    // looking for an area to borrow.
-    //
-    QemuInitializeRamBelow1gb (PlatformInfoHob);
+    CreateSmmSmramMemoryHob (TsegBase, TsegSize);
   } else {
-    //
-    // Create memory HOBs
-    //
-    QemuInitializeRamBelow1gb (PlatformInfoHob);
+    PlatformAddMemoryRangeHob (BASE_1MB, PlatformInfoHob->LowMemory);
+  }
 
-    if (PlatformInfoHob->SmmSmramRequire) {
-      UINT32  TsegSize;
-
-      TsegSize = PlatformInfoHob->Q35TsegMbytes * SIZE_1MB;
-      PlatformAddMemoryRangeHob (BASE_1MB, LowerMemorySize - TsegSize);
-      PlatformAddReservedMemoryBaseSizeHob (
-        LowerMemorySize - TsegSize,
-        TsegSize,
-        TRUE
-        );
-    } else {
-      PlatformAddMemoryRangeHob (BASE_1MB, LowerMemorySize);
-    }
-
+  if (PlatformInfoHob->BootMode != BOOT_ON_S3_RESUME) {
     //
     // If QEMU presents an E820 map, then create memory HOBs for the >=4GB RAM
     // entries. Otherwise, create a single memory HOB with the flat >=4GB
     // memory size read from the CMOS.
     //
-    Status = PlatformScanOrAdd64BitE820Ram (TRUE, NULL, NULL);
+    Status = PlatformScanE820 (PlatformAddHobCB, PlatformInfoHob);
     if (EFI_ERROR (Status)) {
       UpperMemorySize = PlatformGetSystemMemorySizeAbove4gb ();
       if (UpperMemorySize != 0) {
@@ -949,13 +1145,20 @@ PlatformQemuInitializeRam (
   //
   // We'd like to keep the following ranges uncached:
   // - [640 KB, 1 MB)
-  // - [LowerMemorySize, 4 GB)
+  // - [Uc32Base, 4 GB)
   //
   // Everything else should be WB. Unfortunately, programming the inverse (ie.
   // keeping the default UC, and configuring the complement set of the above as
   // WB) is not reliable in general, because the end of the upper RAM can have
   // practically any alignment, and we may not have enough variable MTRRs to
   // cover it exactly.
+  //
+  // Because of that PlatformQemuUc32BaseInitialization() will round
+  // up PlatformInfoHob->LowMemory to make sure a single mtrr register
+  // is enough.  The the result will be stored in
+  // PlatformInfoHob->Uc32Base.  On a typical qemu configuration with
+  // gigabyte-alignment being used LowMemory will be 2 or 3 GB and no
+  // rounding is needed, so LowMemory and Uc32Base will be identical.
   //
   if (IsMtrrSupported () && (PlatformInfoHob->HostBridgeDevId != CLOUDHV_DEVICE_ID)) {
     MtrrGetAllMtrrs (&MtrrSettings);
@@ -986,8 +1189,8 @@ PlatformQemuInitializeRam (
     ASSERT_EFI_ERROR (Status);
 
     //
-    // Set the memory range from the start of the 32-bit MMIO area (32-bit PCI
-    // MMIO aperture on i440fx, PCIEXBAR on q35) to 4GB as uncacheable.
+    // Set the memory range from the start of the 32-bit PCI MMIO
+    // aperture to 4GB as uncacheable.
     //
     Status = MtrrSetMemoryAttribute (
                PlatformInfoHob->Uc32Base,
@@ -1107,9 +1310,10 @@ PlatformQemuInitializeRamForS3 (
       // Make sure the TSEG area that we reported as a reserved memory resource
       // cannot be used for reserved memory allocations.
       //
+      PlatformGetSystemMemorySizeBelow4gb (PlatformInfoHob);
       TsegSize = PlatformInfoHob->Q35TsegMbytes * SIZE_1MB;
       BuildMemoryAllocationHob (
-        PlatformGetSystemMemorySizeBelow4gb (PlatformInfoHob) - TsegSize,
+        PlatformInfoHob->LowMemory - TsegSize,
         TsegSize,
         EfiReservedMemoryType
         );

@@ -1,3 +1,253 @@
+edk2 (2024.05-1) unstable; urgency=medium
+
+  * New upstream release, based on edk2-stable202405 tag:
+    - Include new SpdmLib submodule.
+    - d/binary-check.ignore: Add new upstream files.
+
+ -- dann frazier <dannf@debian.org>  Tue, 04 Jun 2024 10:56:31 -0600
+
+edk2 (2024.02-2) unstable; urgency=medium
+
+  * Drop unused build-dependency on python3-distutils. (Closes: #1065854).
+
+ -- dann frazier <dannf@debian.org>  Mon, 11 Mar 2024 08:25:33 -0600
+
+edk2 (2024.02-1) unstable; urgency=medium
+
+  * New upstream release, based on edk2-stable202402 tag:
+    - Stop including unused mbedtls source to avoid unnecessary
+      security triage:
+      + d/p/mbedtls-disable.diff
+    - Drop patches merged upstream:
+      + d/p/0001-SecurityPkg-DxeTpm2MeasureBootLib-SECURITY-PATCH-411.patch
+      + d/p/0002-SecurityPkg-DxeTpmMeasureBootLib-SECURITY-PATCH-4117.patch
+      + d/p/0003-SecurityPkg-Adding-CVE-2022-36763-to-SecurityFixes.y.patch
+      + d/p/0001-SecurityPkg-DxeTpm2MeasureBootLib-SECURITY-PATCH-411-2.patch
+      + d/p/0002-SecurityPkg-DxeTpmMeasureBootLib-SECURITY-PATCH-4118.patch
+      + d/p/0003-SecurityPkg-Adding-CVE-2022-36764-to-SecurityFixes.y.patch
+      + d/p/0001-SecurityPkg-DxeTpm2MeasureBootLib-SECURITY-PATCH-411-3.patch
+      + d/p/0002-SecurityPkg-DxeTpmMeasureBootLib-SECURITY-PATCH-4117-2.patch
+      + d/p/0003-SecurityPkg-Updating-SecurityFixes.yaml-after-symbol.patch
+      + d/p/0001-UefiPayloadPkg-Hob-Integer-Overflow-in-CreateHob.patch
+      + d/p/0001-NetworkPkg-Dhcp6Dxe-SECURITY-PATCH-CVE-2023-45230-Pa.patch
+      + d/p/0002-NetworkPkg-Add-Unit-tests-to-CI-and-create-Host-Test.patch
+      + d/p/0003-NetworkPkg-Dhcp6Dxe-SECURITY-PATCH-CVE-2023-45230-Un.patch
+      + d/p/0004-NetworkPkg-Dhcp6Dxe-SECURITY-PATCH-CVE-2023-45229-Pa.patch
+      + d/p/0005-NetworkPkg-Dhcp6Dxe-SECURITY-PATCH-CVE-2023-45229-Un.patch
+      + d/p/0006-NetworkPkg-Ip6Dxe-SECURITY-PATCH-CVE-2023-45231-Patc.patch
+      + d/p/0007-NetworkPkg-Ip6Dxe-SECURITY-PATCH-CVE-2023-45231-Unit.patch
+      + d/p/0008-NetworkPkg-Ip6Dxe-SECURITY-PATCH-CVE-2023-45232-Patc.patch
+      + d/p/0009-NetworkPkg-Ip6Dxe-SECURITY-PATCH-CVE-2023-45232-Unit.patch
+      + d/p/0010-NetworkPkg-UefiPxeBcDxe-SECURITY-PATCH-CVE-2023-4523.patch
+      + d/p/0011-NetworkPkg-UefiPxeBcDxe-SECURITY-PATCH-CVE-2023-4523.patch
+      + d/p/0012-MdePkg-Test-Add-gRT_GetTime-Google-Test-Mock.patch
+      + d/p/0013-NetworkPkg-UefiPxeBcDxe-SECURITY-PATCH-CVE-2023-4523.patch
+      + d/p/0014-NetworkPkg-UefiPxeBcDxe-SECURITY-PATCH-CVE-2023-4523.patch
+      + d/p/0015-NetworkPkg-Adds-a-SecurityFix.yaml-file.patch
+   * d/binary-check.ignore: Remove globs that no longer match anything.
+
+ -- dann frazier <dannf@debian.org>  Sun, 25 Feb 2024 15:34:27 -0700
+
+edk2 (2023.11-8) unstable; urgency=medium
+
+  * debian/rules: Add debug flag to edk2-vars-generator.py commands.
+  * debian/python/UEFI/Qemu: Fix var template for snakeoil commands.
+  * debian/rules: Fix OVMF snakeoil enrollment by using the secboot
+    CODE variant.
+  * debian/tests/shell.py: Detect "Access Denied" message to fix
+    test_*_ms_secure_boot_unsigned cases.
+  * debian/rules: switch to 64bit PEI for OVMF(X64) images now that
+    it supports S3 suspend. Thanks Hector Cao.
+
+ -- dann frazier <dannf@debian.org>  Wed, 21 Feb 2024 16:25:20 -0700
+
+edk2 (2023.11-7) unstable; urgency=medium
+
+  * ovmf, qemu-efi-*: Stop building Secure Boot code into non-secboot
+    images so they can include a built-in shell which is unsafe in
+    Secure Boot mode.
+  * ovmf-ia32: Add non-secboot image. Thanks to Lionel Debroux.
+    (Closes: #1023491).
+  * debian/tests/shell.py: Add tests for ovmf-ia32 non-secboot image.
+  * qemu-efi-aarch64: Add non-secboot variant. AAVMF_CODE.fd is the
+    secboot variant, so name it AAVMF_CODE.no-secboot.fd.
+  * qemu-efi-aarch64: Rename the secboot variant, AAVMF_CODE.fd,
+    to AAVMF_CODE.secboot.fd and add a compat symlink.
+  * ovmf, ovmf-ia32, qemu-efi-aarch64: Stop including a built-in shell
+    in secboot variants, CVE-2023-48733. Thanks to Mate Kukri.
+    LP: #2040137.
+    - d/tests: Drop the boot-to-shell tests for images w/ Secure Boot.
+    - d/tests: Update run_cmd_check_secure_boot() to not expect shell
+      interaction.
+
+ -- dann frazier <dannf@debian.org>  Wed, 14 Feb 2024 07:35:13 -0700
+
+edk2 (2023.11-6) unstable; urgency=medium
+
+  * Cherry-pick security fixes from upstream:
+    - Fix a buffer overflow via a long server ID option in DHCPv6
+      client, CVE-2023-45230:
+      + 0001-NetworkPkg-Dhcp6Dxe-SECURITY-PATCH-CVE-2023-45230-Pa.patch
+      + 0002-NetworkPkg-Add-Unit-tests-to-CI-and-create-Host-Test.patch
+      + 0003-NetworkPkg-Dhcp6Dxe-SECURITY-PATCH-CVE-2023-45230-Un.patch
+    - Fix an out-of-bounds read vulnerability when processing the IA_NA
+      or IA_TA option in a DHCPv6 Advertise message, CVE-2023-45229:
+      + 0004-NetworkPkg-Dhcp6Dxe-SECURITY-PATCH-CVE-2023-45229-Pa.patch
+      + 0005-NetworkPkg-Dhcp6Dxe-SECURITY-PATCH-CVE-2023-45229-Un.patch
+    - Fix an out-of-bounds read when processing Neighbor Discovery
+      Redirect messages, CVE-2023-45231:
+      + 0006-NetworkPkg-Ip6Dxe-SECURITY-PATCH-CVE-2023-45231-Patc.patch
+      + 0007-NetworkPkg-Ip6Dxe-SECURITY-PATCH-CVE-2023-45231-Unit.patch
+    - Avoid an infinite loop when parsing unknown options in the
+      Destination Options header of IPv6, CVE-2023-45232:
+      + 0008-NetworkPkg-Ip6Dxe-SECURITY-PATCH-CVE-2023-45232-Patc.patch
+      + 0009-NetworkPkg-Ip6Dxe-SECURITY-PATCH-CVE-2023-45232-Unit.patch
+    - Avoid an infinite loop when parsing a PadN option in the
+      Destination Options header of IPv6, CVE-2023-45233:
+      + 0010-NetworkPkg-UefiPxeBcDxe-SECURITY-PATCH-CVE-2023-4523.patch
+      + 0011-NetworkPkg-UefiPxeBcDxe-SECURITY-PATCH-CVE-2023-4523.patch
+    - Fix a potential buffer overflow when processing a DNS Servers
+      option from a DHCPv6 Advertise message, CVE-2023-45234:
+      + 0013-NetworkPkg-UefiPxeBcDxe-SECURITY-PATCH-CVE-2023-4523.patch
+    - Fix a potential buffer overflow when handling a Server ID option
+      from a DHCPv6 proxy Advertise message, CVE-2023-45235:
+      + 0012-MdePkg-Test-Add-gRT_GetTime-Google-Test-Mock.patch
+      + 0014-NetworkPkg-UefiPxeBcDxe-SECURITY-PATCH-CVE-2023-4523.patch
+    - Record fixes in a SecurityFix.yaml file:
+      + 0015-NetworkPkg-Adds-a-SecurityFix.yaml-file.patch
+
+ -- dann frazier <dannf@debian.org>  Sat, 10 Feb 2024 14:02:37 -0700
+
+edk2 (2023.11-5) unstable; urgency=medium
+
+  * Cherry-pick security fixes from upstream (Closes: #1060408):
+    - Fix heap buffer overflow in Tcg2MeasureGptTable(), CVE-2022-36763
+      + 0001-SecurityPkg-DxeTpm2MeasureBootLib-SECURITY-PATCH-411.patch
+      + 0002-SecurityPkg-DxeTpmMeasureBootLib-SECURITY-PATCH-4117.patch
+      + 0003-SecurityPkg-Adding-CVE-2022-36763-to-SecurityFixes.y.patch
+    - Fix heap buffer overflow in Tcg2MeasurePeImage(), CVE-2022-36764
+      + 0001-SecurityPkg-DxeTpm2MeasureBootLib-SECURITY-PATCH-411-2.patch
+      + 0002-SecurityPkg-DxeTpmMeasureBootLib-SECURITY-PATCH-4118.patch
+      + 0003-SecurityPkg-Adding-CVE-2022-36764-to-SecurityFixes.y.patch
+    - Fix build failure due to symbol collision in above patches:
+      + 0001-SecurityPkg-DxeTpm2MeasureBootLib-SECURITY-PATCH-411-3.patch
+      + 0002-SecurityPkg-DxeTpmMeasureBootLib-SECURITY-PATCH-4117-2.patch
+      + 0003-SecurityPkg-Updating-SecurityFixes.yaml-after-symbol.patch
+    - Fix integer overflow in CreateHob(), CVE-2022-36765
+      + 0001-UefiPayloadPkg-Hob-Integer-Overflow-in-CreateHob.patch
+
+ -- dann frazier <dannf@debian.org>  Sat, 20 Jan 2024 09:13:36 -0700
+
+edk2 (2023.11-4) unstable; urgency=medium
+
+  * ovmf: Enable EFI_CC_MEASUREMENT_PROTOCOL. LP: #2047922.
+
+ -- dann frazier <dannf@debian.org>  Sat, 06 Jan 2024 11:16:34 -0700
+
+edk2 (2023.11-3) unstable; urgency=medium
+
+  * ovmf: Fix link to migration doc (missing .gz). Closes: #1059506.
+  * Add efi-shell-riscv64 package, thanks to Heinrich Schuchardt.
+
+ -- dann frazier <dannf@debian.org>  Sun, 31 Dec 2023 11:48:34 -0700
+
+edk2 (2023.11-2) unstable; urgency=medium
+
+  * ovmf: Remove dangling symlink to removed 2M image:
+    - /usr/share/OVMF/OVMF_CODE.ms.fd
+  * autopkgtest: Add missing dependency on qemu-efi-riscv64.
+  * ovmf: Add guide and tool for migrating VMs using 2M images to 4M
+    images now that python3-virt-firmware is available in Debian.
+  * ovmf: Restore the combined CODE/VARS image OVMF.fd, this time
+    as a 4M image. Document that it is being provided as a convenience
+    for testing purposes only.
+
+ -- dann frazier <dannf@debian.org>  Sun, 24 Dec 2023 16:24:28 -0700
+
+edk2 (2023.11-1) experimental; urgency=medium
+
+  * New upstream release, based on edk2-stable202311 tag.
+    - Include new MbedTlsLib submodule.
+    - d/binary-check.ignore: Add new upstream files.
+  * qemu-efi-riscv64: Add a README.Debian, thanks to Heinrich Schuchardt.
+    Closes: #1054651.
+  * ovmf/qemu-efi-*: Add a Suggests for the appropriate QEMU system package.
+  * d/find-binaries.py: Replace nameOK() with globs in d/binary-check.ignore.
+  * d/find-binaries.py: Replace extensionOK() with globs in
+    d/binary-check.ignore.
+  * d/copyright: Remove superfluous file patterns. Thanks lintian.
+  * d/copyright: Correct globbing order. Thanks lintian.
+
+ -- dann frazier <dannf@debian.org>  Tue, 19 Dec 2023 14:22:47 -0700
+
+edk2 (2023.08-1) experimental; urgency=medium
+
+  * New upstream release, based on edk2-stable202308 tag.
+  * Add qemu-efi-riscv64 package.
+  * Use an infinite timeout for pyexpect scripts that run during build
+    to avoid build failures due to slow builders. Closes: #1049840.
+  * ovmf: Drop 2M compatibility images. See README.Debian for details.
+  * Add ${misc:Depends} to efi-shell-* to address lintian warning.
+
+ -- dann frazier <dannf@debian.org>  Wed, 25 Oct 2023 07:51:53 -0600
+
+edk2 (2023.05-2) unstable; urgency=medium
+
+  * qemu-efi-aarch64/qemu-efi-arm: Disable the EFI_MEMORY_ATTRIBUTE
+    protocol temporarily to workaround a bug in shim until distributions
+    have had a chance to fix it. Closes: #1042438, LP: #2036604.
+  * Drop qemu-efi transitional package. Closes: #1032695.
+
+ -- dann frazier <dannf@debian.org>  Sat, 23 Sep 2023 08:35:39 -0600
+
+edk2 (2023.05-1) unstable; urgency=medium
+
+  * New upstream release, based on edk2-stable202305 tag.
+    - Update debian/copyright, including change to BSD-2-Clause-Patent
+      license that happened in 2019.
+    - Refresh patches:
+      + d/p/no-stack-protector-all-archs.diff
+      + d/p/x64-baseline-abi.patch
+      + d/p/Revert-ArmVirtPkg-make-EFI_LOADER_DATA-non-executabl.patch
+
+ -- dann frazier <dannf@debian.org>  Sat, 22 Jul 2023 17:17:53 -0600
+
+edk2 (2023.02-2) experimental; urgency=medium
+
+  * Introduce efi-shell-* packages. Thanks to Heinrich Schuchardt of
+    Canonical. Closes: #837093, LP: #2006980.
+  * Add missing build dependency on lsb-release, thanks to José Martínez
+    of Google.
+  * Fix empty AAVMF_VARS.fd file, thanks to José Martínez of Google.
+  * Generate a new snakeoil certificate with a CN set. LP: #2019993.
+
+ -- dann frazier <dannf@debian.org>  Fri, 19 May 2023 17:21:36 -0600
+
+edk2 (2023.02-1) experimental; urgency=medium
+
+  * New upstream release, based on edk2-stable202302 tag.
+    - Drop patches merged upstream:
+      + d/p/0001-ArmVirtPkg-ArmPlatformLibQemu-Ensure-that-VFP-is-on-.patch
+      + d/p/0002-ArmVirtPkg-ArmVirtQemu-Avoid-early-ID-map-on-Thunder.patch
+    - Refresh patches:
+      + Revert-ArmVirtPkg-make-EFI_LOADER_DATA-non-executabl.patch
+      + brotlicompress-disable.diff
+      + no-stack-protector-all-archs.diff
+      + x64-baseline-abi.patch
+  * d/binary-check updates:
+    - binary-check.(allow,remove): Remove files that no longer exist
+      upstream.
+    - find-binaries.py: Fix exit code when new possible binaries are found.
+    - Rename binary-check.allow to binary-check.ignore.
+    - Convert binary-check.ignore from a list of files to a list of globs.
+    - binary-check.ignore: Update.
+  * debian/rules: Correctness fix for OVMF32 build target dependency,
+    thanks to Glenn Washburn.
+  * Provide PCD configuration for SMBIOS release info. Thanks to Fiona Ebner
+    of Proxmox for noticing and reporting the need for this.
+
+ -- dann frazier <dannf@debian.org>  Mon, 10 Apr 2023 14:16:04 -0600
+
 edk2 (2022.11-6) unstable; urgency=medium
 
   * autopkgtest: Set an encoding in pexpect.spawn() calls so we can
