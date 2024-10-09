@@ -23,8 +23,14 @@
 
 #include <Library/BaseLib.h>
 #include <Library/BaseMemoryLib.h>
+#include <Library/RngLib.h>
 
 #include "RngDxeInternals.h"
+
+//
+// Count of Rng algorithms.
+//
+#define RNG_ALGORITHM_COUNT  2
 
 /** Allocate and initialize mAvailableAlgoArray with the available
     Rng algorithms. Also update mAvailableAlgoArrayCount.
@@ -38,6 +44,12 @@ GetAvailableAlgorithms (
   VOID
   )
 {
+  UINT64  RngTest;
+
+  if (GetRandomNumber64 (&RngTest)) {
+    mAvailableAlgoArrayCount = RNG_ALGORITHM_COUNT;
+  }
+
   return EFI_SUCCESS;
 }
 
@@ -49,6 +61,7 @@ FreeAvailableAlgorithms (
   VOID
   )
 {
+  mAvailableAlgoArrayCount = 0;
   return;
 }
 
@@ -109,14 +122,6 @@ RngGetRNG (
   // The "raw" algorithm is intended to provide entropy directly
   //
   if (CompareGuid (RNGAlgorithm, &gEfiRngAlgorithmRaw)) {
-    //
-    // When a DRBG is used on the output of a entropy source,
-    // its security level must be at least 256 bits according to UEFI Spec.
-    //
-    if (RNGValueLength < 32) {
-      return EFI_INVALID_PARAMETER;
-    }
-
     Status = GenerateEntropy (RNGValueLength, RNGValue);
     return Status;
   }
@@ -164,7 +169,7 @@ RngGetInfo (
     return EFI_INVALID_PARAMETER;
   }
 
-  RequiredSize = 2 * sizeof (EFI_RNG_ALGORITHM);
+  RequiredSize = RNG_ALGORITHM_COUNT * sizeof (EFI_RNG_ALGORITHM);
 
   if (*RNGAlgorithmListSize < RequiredSize) {
     *RNGAlgorithmListSize = RequiredSize;

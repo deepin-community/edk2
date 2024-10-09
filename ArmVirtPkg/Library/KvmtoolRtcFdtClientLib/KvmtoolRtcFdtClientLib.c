@@ -44,7 +44,7 @@ KvmtoolRtcMapMemory (
                   EfiGcdMemoryTypeMemoryMappedIo,
                   RtcPageBase,
                   EFI_PAGE_SIZE,
-                  EFI_MEMORY_UC | EFI_MEMORY_RUNTIME
+                  EFI_MEMORY_UC | EFI_MEMORY_RUNTIME | EFI_MEMORY_XP
                   );
   if (EFI_ERROR (Status)) {
     DEBUG ((
@@ -80,7 +80,7 @@ KvmtoolRtcMapMemory (
   Status = gDS->SetMemorySpaceAttributes (
                   RtcPageBase,
                   EFI_PAGE_SIZE,
-                  EFI_MEMORY_UC | EFI_MEMORY_RUNTIME
+                  EFI_MEMORY_UC | EFI_MEMORY_RUNTIME | EFI_MEMORY_XP
                   );
   if (EFI_ERROR (Status)) {
     DEBUG ((
@@ -147,7 +147,7 @@ KvmtoolRtcFdtClientLibConstructor (
     DEBUG ((
       DEBUG_ERROR,
       "%a: No 'motorola,mc146818' compatible DT node found\n",
-      __FUNCTION__
+      __func__
       ));
     return Status;
   }
@@ -163,7 +163,7 @@ KvmtoolRtcFdtClientLibConstructor (
     DEBUG ((
       DEBUG_ERROR,
       "%a: No 'reg' property found in 'motorola,mc146818' compatible DT node\n",
-      __FUNCTION__
+      __func__
       ));
     return Status;
   }

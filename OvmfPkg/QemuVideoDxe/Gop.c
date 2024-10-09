@@ -9,6 +9,8 @@
 
 #include "Qemu.h"
 
+#include <Library/DxeServicesTableLib.h>
+
 STATIC
 VOID
 QemuVideoCompleteModeInfo (
@@ -37,7 +39,7 @@ QemuVideoCompleteModeInfo (
     Info->PixelInformation.BlueMask     = 0;
     Info->PixelInformation.ReservedMask = 0;
   } else {
-    DEBUG ((DEBUG_ERROR, "%a: Invalid ColorDepth %u", __FUNCTION__, ModeData->ColorDepth));
+    DEBUG ((DEBUG_ERROR, "%a: Invalid ColorDepth %u", __func__, ModeData->ColorDepth));
     ASSERT (FALSE);
   }
 
@@ -54,6 +56,7 @@ QemuVideoCompleteModeData (
   EFI_GRAPHICS_OUTPUT_MODE_INFORMATION  *Info;
   EFI_ACPI_ADDRESS_SPACE_DESCRIPTOR     *FrameBufDesc;
   QEMU_VIDEO_MODE_DATA                  *ModeData;
+  EFI_STATUS                            Status;
 
   ModeData = &Private->ModeData[Mode->Mode];
   Info     = Mode->Info;
@@ -78,6 +81,22 @@ QemuVideoCompleteModeData (
     Mode->FrameBufferBase,
     (UINT64)Mode->FrameBufferSize
     ));
+
+  if (FeaturePcdGet (PcdRemapFrameBufferWriteCombine)) {
+    Status = gDS->SetMemorySpaceCapabilities (
+                    FrameBufDesc->AddrRangeMin,
+                    FrameBufDesc->AddrLen,
+                    EFI_MEMORY_UC | EFI_MEMORY_WC | EFI_MEMORY_XP
+                    );
+    ASSERT_EFI_ERROR (Status);
+
+    Status = gDS->SetMemorySpaceAttributes (
+                    FrameBufDesc->AddrRangeMin,
+                    FrameBufDesc->AddrLen,
+                    EFI_MEMORY_WC | EFI_MEMORY_XP
+                    );
+    ASSERT_EFI_ERROR (Status);
+  }
 
   FreePool (FrameBufDesc);
   return EFI_SUCCESS;

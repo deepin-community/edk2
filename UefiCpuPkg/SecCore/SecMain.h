@@ -19,12 +19,12 @@
 
 #include <Guid/FirmwarePerformance.h>
 
+#include <Library/BaseLib.h>
 #include <Library/DebugLib.h>
 #include <Library/PcdLib.h>
 #include <Library/BaseMemoryLib.h>
 #include <Library/PlatformSecLib.h>
 #include <Library/CpuLib.h>
-#include <Library/UefiCpuLib.h>
 #include <Library/PeCoffGetEntryPointLib.h>
 #include <Library/PeCoffExtraActionLib.h>
 #include <Library/DebugAgentLib.h>
@@ -33,6 +33,9 @@
 #include <Library/PeiServicesTablePointerLib.h>
 #include <Library/HobLib.h>
 #include <Library/PeiServicesLib.h>
+#include <Library/CpuPageTableLib.h>
+#include <Register/Intel/Cpuid.h>
+#include <Register/Intel/Msr.h>
 
 #define SEC_IDT_ENTRY_COUNT  34
 
@@ -96,18 +99,6 @@ FindAndReportEntryPoints (
   IN  EFI_FIRMWARE_VOLUME_HEADER  *SecCoreFirmwareVolumePtr,
   IN  EFI_FIRMWARE_VOLUME_HEADER  *PeiCoreFirmwareVolumePtr,
   OUT EFI_PEI_CORE_ENTRY_POINT    *PeiCoreEntryPoint
-  );
-
-/**
-  Auto-generated function that calls the library constructors for all of the module's
-  dependent libraries.  This function must be called by the SEC Core once a stack has
-  been established.
-
-**/
-VOID
-EFIAPI
-ProcessLibraryConstructorList (
-  VOID
   );
 
 /**

@@ -24,6 +24,7 @@
 #include <Library/MemoryAllocationLib.h>
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/DevicePathLib.h>
+#include <Library/PcdLib.h>
 #include <Library/TimerLib.h>
 
 #include "UfsPassThruHci.h"
@@ -38,9 +39,8 @@
 //  Lun 10: BOOT
 //  Lun 11: RPMB
 //
-#define UFS_MAX_LUNS                 12
-#define UFS_WLUN_PREFIX              0xC1
-#define UFS_INIT_COMPLETION_TIMEOUT  600000
+#define UFS_MAX_LUNS     12
+#define UFS_WLUN_PREFIX  0xC1
 
 typedef struct {
   UINT8     Lun[UFS_MAX_LUNS];
@@ -104,8 +104,6 @@ typedef struct {
 #define UFS_HC_ASYNC_TIMER  EFI_TIMER_PERIOD_MILLISECONDS(1)
 
 #define ROUNDUP8(x)  (((x) % 8 == 0) ? (x) : ((x) / 8 + 1) * 8)
-
-#define IS_ALIGNED(addr, size)  (((UINTN) (addr) & (size - 1)) == 0)
 
 #define UFS_PASS_THRU_PRIVATE_DATA_FROM_THIS(a) \
   CR (a, \

@@ -271,8 +271,56 @@ strcpy (
   const char  *strSource
   )
 {
-  AsciiStrCpyS (strDest, MAX_STRING_SIZE, strSource);
+  AsciiStrCpyS (strDest, AsciiStrnSizeS (strSource, MAX_STRING_SIZE - 1), strSource);
   return strDest;
+}
+
+char *
+strncpy (
+  char        *strDest,
+  const char  *strSource,
+  size_t      count
+  )
+{
+  UINTN  DestMax = MAX_STRING_SIZE;
+
+  if (count < MAX_STRING_SIZE) {
+    DestMax = count + 1;
+  } else {
+    count = MAX_STRING_SIZE-1;
+  }
+
+  AsciiStrnCpyS (strDest, DestMax, strSource, (UINTN)count);
+
+  return strDest;
+}
+
+char *
+strcat (
+  char        *strDest,
+  const char  *strSource
+  )
+{
+  UINTN  DestMax;
+
+  DestMax = AsciiStrnLenS (strDest, MAX_STRING_SIZE) + AsciiStrnSizeS (strSource, MAX_STRING_SIZE);
+
+  if (DestMax > MAX_STRING_SIZE) {
+    DestMax = MAX_STRING_SIZE;
+  }
+
+  AsciiStrCatS (strDest, DestMax, strSource);
+
+  return strDest;
+}
+
+int
+strcmp (
+  const char  *s1,
+  const char  *s2
+  )
+{
+  return (int)AsciiStrCmp (s1, s2);
 }
 
 //
@@ -470,33 +518,6 @@ fwrite (
   )
 {
   return 0;
-}
-
-//
-//  -- Dummy OpenSSL Support Routines --
-//
-
-int
-BIO_printf (
-  void        *bio,
-  const char  *format,
-  ...
-  )
-{
-  return 0;
-}
-
-int
-BIO_snprintf (
-  char        *buf,
-  size_t      n,
-  const char  *format,
-  ...
-  )
-{
-  // Because the function does not actually print anything to buf, it returns -1 as error.
-  // Otherwise, the consumer may think that the buf is valid and parse the buffer.
-  return -1;
 }
 
 #ifdef __GNUC__

@@ -17,7 +17,6 @@
 # this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 
-import enum
 import os
 import pexpect
 import subprocess
@@ -107,47 +106,27 @@ class BootToShellTest(unittest.TestCase):
             self.fail("%s\n" % (err))
 
     def run_cmd_check_secure_boot(self, cmd, efiarch, should_verify):
-        class State(enum.Enum):
-            PRE_EXEC = 1
-            POST_EXEC = 2
-
         child = pexpect.spawn(' '.join(cmd), encoding='UTF-8')
 
         if self.debug:
             child.logfile = sys.stdout
         try:
-            state = State.PRE_EXEC
             while True:
                 i = child.expect(
                     [
-                        'Press .* or any other key to continue',
-                        'Shell> ',
-                        "FS0:\\\\> ",
                         'grub> ',
-                        'Command Error Status: Access Denied',
+                        'BdsDxe: failed to load.*: Access Denied',
                     ],
                     timeout=TEST_TIMEOUT,
                 )
                 if i == 0:
-                    child.sendline('\x1b')
-                    continue
-                if i == 1:
-                    child.sendline('fs0:\r')
-                    continue
-                if i == 2:
-                    if state == State.PRE_EXEC:
-                        child.sendline(f'\\efi\\boot\\boot{efiarch}.efi\r')
-                        state = State.POST_EXEC
-                    elif state == State.POST_EXEC:
-                        child.sendline('reset -s\r')
-                    continue
-                if i == 3:
                     child.sendline('halt\r')
                     verified = True
                     continue
-                if i == 4:
+                if i == 1:
+                    child.close()
                     verified = False
-                    continue
+                    break
         except pexpect.EOF:
             child.close()
             if child.exitstatus != 0:
@@ -201,87 +180,17 @@ class BootToShellTest(unittest.TestCase):
         q = Qemu.QemuCommand(QemuEfiMachine.AAVMF32)
         self.run_cmd_check_shell(q.command)
 
-    def test_ovmf_pc(self):
+    def test_ovmf_4m_pc(self):
         q = Qemu.QemuCommand(
-            QemuEfiMachine.OVMF_PC, flash_size=QemuEfiFlashSize.SIZE_2MB,
-        )
-        self.run_cmd_check_shell(q.command)
-
-    def test_ovmf_q35(self):
-        q = Qemu.QemuCommand(
-            QemuEfiMachine.OVMF_Q35, flash_size=QemuEfiFlashSize.SIZE_2MB,
-        )
-        self.run_cmd_check_shell(q.command)
-
-    def test_ovmf_secboot(self):
-        q = Qemu.QemuCommand(
-            QemuEfiMachine.OVMF_Q35,
-            variant=QemuEfiVariant.SECBOOT,
-            flash_size=QemuEfiFlashSize.SIZE_2MB,
-        )
-        self.run_cmd_check_shell(q.command)
-
-    def test_ovmf_ms(self):
-        q = Qemu.QemuCommand(
-            QemuEfiMachine.OVMF_Q35,
-            variant=QemuEfiVariant.MS,
-            flash_size=QemuEfiFlashSize.SIZE_2MB,
-        )
-        self.run_cmd_check_shell(q.command)
-
-    @unittest.skipUnless(DPKG_ARCH == 'amd64', "amd64-only")
-    def test_ovmf_ms_secure_boot_signed(self):
-        q = Qemu.QemuCommand(
-            QemuEfiMachine.OVMF_Q35,
-            variant=QemuEfiVariant.MS,
-            flash_size=QemuEfiFlashSize.SIZE_2MB,
-        )
-        grub = get_local_grub_path('X64', signed=True)
-        shim = get_local_shim_path('X64', signed=True)
-        iso = GrubShellBootableIsoImage('X64', shim, grub)
-        q.add_disk(iso.path)
-        self.run_cmd_check_secure_boot(q.command, 'x64', True)
-
-    @unittest.skipUnless(DPKG_ARCH == 'amd64', "amd64-only")
-    def test_ovmf_ms_secure_boot_unsigned(self):
-        q = Qemu.QemuCommand(
-            QemuEfiMachine.OVMF_Q35,
-            variant=QemuEfiVariant.MS,
-            flash_size=QemuEfiFlashSize.SIZE_2MB,
-        )
-        grub = get_local_grub_path('X64', signed=False)
-        shim = get_local_shim_path('X64', signed=False)
-        iso = GrubShellBootableIsoImage('X64', shim, grub)
-        q.add_disk(iso.path)
-        self.run_cmd_check_secure_boot(q.command, 'x64', False)
-
-    def test_ovmf_4m(self):
-        q = Qemu.QemuCommand(
-            QemuEfiMachine.OVMF_Q35,
+            QemuEfiMachine.OVMF_PC,
             flash_size=QemuEfiFlashSize.SIZE_4MB,
         )
         self.run_cmd_check_shell(q.command)
 
-    def test_ovmf_4m_secboot(self):
+    def test_ovmf_4m_q35(self):
         q = Qemu.QemuCommand(
             QemuEfiMachine.OVMF_Q35,
-            variant=QemuEfiVariant.SECBOOT,
             flash_size=QemuEfiFlashSize.SIZE_4MB,
-        )
-        self.run_cmd_check_shell(q.command)
-
-    def test_ovmf_4m_ms(self):
-        q = Qemu.QemuCommand(
-            QemuEfiMachine.OVMF_Q35,
-            variant=QemuEfiVariant.MS,
-            flash_size=QemuEfiFlashSize.SIZE_4MB,
-        )
-        self.run_cmd_check_shell(q.command)
-
-    def test_ovmf_snakeoil(self):
-        q = Qemu.QemuCommand(
-            QemuEfiMachine.OVMF_Q35,
-            variant=QemuEfiVariant.SNAKEOIL,
         )
         self.run_cmd_check_shell(q.command)
 
@@ -346,14 +255,23 @@ class BootToShellTest(unittest.TestCase):
         q.add_disk(iso.path)
         self.run_cmd_check_secure_boot(q.command, 'x64', False)
 
-    def test_ovmf32_4m_secboot(self):
+    def test_ovmf32_4m_pc(self):
         q = Qemu.QemuCommand(
-            QemuEfiMachine.OVMF32,
-            variant=QemuEfiVariant.SECBOOT,
+            QemuEfiMachine.OVMF32_PC,
             flash_size=QemuEfiFlashSize.SIZE_4MB,
         )
         self.run_cmd_check_shell(q.command)
 
+    def test_ovmf32_4m_q35(self):
+        q = Qemu.QemuCommand(
+            QemuEfiMachine.OVMF32_Q35,
+            flash_size=QemuEfiFlashSize.SIZE_4MB,
+        )
+        self.run_cmd_check_shell(q.command)
+
+    def test_riscv64(self):
+        q = Qemu.QemuCommand(QemuEfiMachine.RISCV64)
+        self.run_cmd_check_shell(q.command)
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

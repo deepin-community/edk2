@@ -3,6 +3,7 @@
     Usb Bus Driver Binding and Bus IO Protocol.
 
 Copyright (c) 2004 - 2018, Intel Corporation. All rights reserved.<BR>
+Copyright (C) 2024 Advanced Micro Devices, Inc. All rights reserved.
 SPDX-License-Identifier: BSD-2-Clause-Patent
 
 **/
@@ -821,6 +822,7 @@ UsbIoPortReset (
   EFI_TPL        OldTpl;
   EFI_STATUS     Status;
   UINT8          DevAddress;
+  UINT8          Config;
 
   OldTpl = gBS->RaiseTPL (USB_BUS_TPL);
 
@@ -838,7 +840,7 @@ UsbIoPortReset (
   if (EFI_ERROR (Status)) {
     DEBUG ((
       DEBUG_ERROR,
-      "UsbIoPortReset: failed to reset hub port %d@hub  %d, %r \n",
+      "UsbIoPortReset: failed to reset hub port %d@hub  %d - %r\n",
       Dev->ParentPort,
       Dev->ParentAddr,
       Status
@@ -882,8 +884,26 @@ UsbIoPortReset (
   // is in CONFIGURED state.
   //
   if (Dev->ActiveConfig != NULL) {
-    Status = UsbSetConfig (Dev, Dev->ActiveConfig->Desc.ConfigurationValue);
+    UsbFreeDevDesc (Dev->DevDesc);
 
+    Status = UsbRemoveConfig (Dev);
+    if (EFI_ERROR (Status)) {
+      DEBUG ((DEBUG_ERROR, "UsbIoPortReset: Failed to remove configuration - %r\n", Status));
+    }
+
+    Status = UsbGetMaxPacketSize0 (Dev);
+    if (EFI_ERROR (Status)) {
+      DEBUG ((DEBUG_ERROR, "UsbIoPortReset: Failed to get max packet size - %r\n", Status));
+    }
+
+    Status = UsbBuildDescTable (Dev);
+    if (EFI_ERROR (Status)) {
+      DEBUG ((DEBUG_ERROR, "UsbIoPortReset: Failed to build descriptor table - %r\n", Status));
+    }
+
+    Config = Dev->DevDesc->Configs[0]->Desc.ConfigurationValue;
+
+    Status = UsbSetConfig (Dev, Config);
     if (EFI_ERROR (Status)) {
       DEBUG ((
         DEBUG_ERROR,
@@ -891,6 +911,11 @@ UsbIoPortReset (
         Dev->Address,
         Status
         ));
+    }
+
+    Status = UsbSelectConfig (Dev, Config);
+    if (EFI_ERROR (Status)) {
+      DEBUG ((DEBUG_ERROR, "UsbIoPortReset: Failed to set configuration - %r\n", Status));
     }
   }
 
@@ -945,7 +970,7 @@ UsbBusBuildProtocol (
                   );
 
   if (EFI_ERROR (Status)) {
-    DEBUG ((DEBUG_ERROR, "UsbBusStart: Failed to open device path %r\n", Status));
+    DEBUG ((DEBUG_ERROR, "UsbBusStart: Failed to open device path - %r\n", Status));
 
     FreePool (UsbBus);
     return Status;
@@ -978,7 +1003,7 @@ UsbBusBuildProtocol (
                    );
 
   if (EFI_ERROR (Status) && EFI_ERROR (Status2)) {
-    DEBUG ((DEBUG_ERROR, "UsbBusStart: Failed to open USB_HC/USB2_HC %r\n", Status));
+    DEBUG ((DEBUG_ERROR, "UsbBusStart: Failed to open USB_HC/USB2_HC - %r\n", Status));
 
     Status = EFI_DEVICE_ERROR;
     goto CLOSE_HC;
@@ -1006,7 +1031,7 @@ UsbBusBuildProtocol (
                   );
 
   if (EFI_ERROR (Status)) {
-    DEBUG ((DEBUG_ERROR, "UsbBusStart: Failed to install bus protocol %r\n", Status));
+    DEBUG ((DEBUG_ERROR, "UsbBusStart: Failed to install bus protocol - %r\n", Status));
     goto CLOSE_HC;
   }
 
@@ -1054,7 +1079,7 @@ UsbBusBuildProtocol (
   Status = mUsbRootHubApi.Init (RootIf);
 
   if (EFI_ERROR (Status)) {
-    DEBUG ((DEBUG_ERROR, "UsbBusStart: Failed to init root hub %r\n", Status));
+    DEBUG ((DEBUG_ERROR, "UsbBusStart: Failed to init root hub - %r\n", Status));
     goto FREE_ROOTHUB;
   }
 
@@ -1102,7 +1127,7 @@ CLOSE_HC:
          );
   FreePool (UsbBus);
 
-  DEBUG ((DEBUG_ERROR, "UsbBusStart: Failed to start bus driver %r\n", Status));
+  DEBUG ((DEBUG_ERROR, "UsbBusStart: Failed to start bus driver - %r\n", Status));
   return Status;
 }
 

@@ -87,6 +87,7 @@ SPDX-License-Identifier: BSD-2-Clause-Patent
 #define UINT_MAX      0xFFFFFFFF      /* Maximum unsigned int value */
 #define ULONG_MAX     0xFFFFFFFF      /* Maximum unsigned long value */
 #define CHAR_BIT      8               /* Number of bits in a char */
+#define SIZE_MAX      0xFFFFFFFF      /* Maximum unsigned size_t */
 
 //
 // Address families.
@@ -109,7 +110,7 @@ typedef UINTN   off_t;
 typedef UINTN   u_int;
 typedef INTN    ptrdiff_t;
 typedef INTN    ssize_t;
-typedef INT32   time_t;
+typedef INT64   time_t;
 typedef UINT8   __uint8_t;
 typedef UINT8   sa_family_t;
 typedef UINT8   u_char;
@@ -402,22 +403,33 @@ strcpy (
   const char  *strSource
   );
 
+char *
+strncpy (
+  char        *strDest,
+  const char  *strSource,
+  size_t      count
+  );
+
+char *
+strcat (
+  char        *strDest,
+  const char  *strSource
+  );
+
 //
 // Macros that directly map functions to BaseLib, BaseMemoryLib, and DebugLib functions
 //
-#define memcpy(dest, source, count)         CopyMem(dest,source,(UINTN)(count))
-#define memset(dest, ch, count)             SetMem(dest,(UINTN)(count),(UINT8)(ch))
-#define memchr(buf, ch, count)              ScanMem8(buf,(UINTN)(count),(UINT8)ch)
-#define memcmp(buf1, buf2, count)           (int)(CompareMem(buf1,buf2,(UINTN)(count)))
-#define memmove(dest, source, count)        CopyMem(dest,source,(UINTN)(count))
-#define strlen(str)                         (size_t)(AsciiStrnLenS(str,MAX_STRING_SIZE))
-#define strncpy(strDest, strSource, count)  AsciiStrnCpyS(strDest,MAX_STRING_SIZE,strSource,(UINTN)count)
-#define strcat(strDest, strSource)          AsciiStrCatS(strDest,MAX_STRING_SIZE,strSource)
-#define strncmp(string1, string2, count)    (int)(AsciiStrnCmp(string1,string2,(UINTN)(count)))
-#define strcasecmp(str1, str2)              (int)AsciiStriCmp(str1,str2)
-#define strstr(s1, s2)                      AsciiStrStr(s1,s2)
-#define sprintf(buf, ...)                   AsciiSPrint(buf,MAX_STRING_SIZE,__VA_ARGS__)
-#define localtime(timer)                    NULL
+#define memcpy(dest, source, count)       CopyMem(dest,source,(UINTN)(count))
+#define memset(dest, ch, count)           SetMem(dest,(UINTN)(count),(UINT8)(ch))
+#define memchr(buf, ch, count)            ScanMem8(buf,(UINTN)(count),(UINT8)ch)
+#define memcmp(buf1, buf2, count)         (int)(CompareMem(buf1,buf2,(UINTN)(count)))
+#define memmove(dest, source, count)      CopyMem(dest,source,(UINTN)(count))
+#define strlen(str)                       (size_t)(AsciiStrnLenS(str,MAX_STRING_SIZE))
+#define strncmp(string1, string2, count)  (int)(AsciiStrnCmp(string1,string2,(UINTN)(count)))
+#define strcasecmp(str1, str2)            (int)AsciiStriCmp(str1,str2)
+#define strstr(s1, s2)                    AsciiStrStr(s1,s2)
+#define sprintf(buf, ...)                 AsciiSPrint(buf,MAX_STRING_SIZE,__VA_ARGS__)
+#define localtime(timer)                  NULL
 #define assert(expression)
 #define offsetof(type, member)  OFFSET_OF(type,member)
 #define atoi(nptr)              AsciiStrDecimalToUintn(nptr)

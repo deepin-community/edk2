@@ -753,7 +753,7 @@ HttpUrlGetPort (
 
   Status =  AsciiStrDecimalToUintnS (Url + Parser->FieldData[HTTP_URI_FIELD_PORT].Offset, (CHAR8 **)NULL, &Data);
 
-  if (Data > HTTP_URI_PORT_MAX_NUM) {
+  if (EFI_ERROR (Status) || (Data > HTTP_URI_PORT_MAX_NUM)) {
     Status = EFI_INVALID_PARAMETER;
     goto ON_EXIT;
   }
@@ -1925,6 +1925,11 @@ HttpGenRequestMessage (
       case HttpMethodDelete:
         StrLength = sizeof (HTTP_METHOD_DELETE) - 1;
         CopyMem (RequestPtr, HTTP_METHOD_DELETE, StrLength);
+        RequestPtr += StrLength;
+        break;
+      case HttpMethodConnect:
+        StrLength = sizeof (HTTP_METHOD_CONNECT) - 1;
+        CopyMem (RequestPtr, HTTP_METHOD_CONNECT, StrLength);
         RequestPtr += StrLength;
         break;
       default:

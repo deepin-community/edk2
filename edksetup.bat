@@ -86,6 +86,7 @@ if exist %EDK_TOOLS_PATH%\Source set BASE_TOOLS_PATH=%EDK_TOOLS_PATH%
 :checkBaseTools
 IF NOT EXIST "%EDK_TOOLS_PATH%\toolsetup.bat" goto BadBaseTools
 call %EDK_TOOLS_PATH%\toolsetup.bat %*
+if %ERRORLEVEL% NEQ 0 goto end
 if /I "%1"=="Reconfig" shift
 goto check_NASM
 goto check_cygwin
@@ -145,25 +146,23 @@ if defined CYGWIN_HOME (
 :cygwin_done
 if /I "%1"=="Rebuild" shift
 if /I "%1"=="ForceRebuild" shift
+if /I "%1"=="VS2022" shift
 if /I "%1"=="VS2019" shift
 if /I "%1"=="VS2017" shift
 if /I "%1"=="VS2015" shift
-if /I "%1"=="VS2013" shift
-if /I "%1"=="VS2012" shift
 if "%1"=="" goto end
 
 :Usage
   @echo.
-  @echo  Usage: "%0 [-h | -help | --help | /h | /help | /?] [Reconfig] [Rebuild] [ForceRebuild] [VS2019] [VS2017] [VS2015] [VS2013] [VS2012]"
+  @echo  Usage: "%0 [-h | -help | --help | /h | /help | /?] [Reconfig] [Rebuild] [ForceRebuild] [VS2019] [VS2017] [VS2015]"
   @echo.
   @echo         Reconfig       Reinstall target.txt, tools_def.txt and build_rule.txt.
   @echo         Rebuild        Perform incremental rebuild of BaseTools binaries.
   @echo         ForceRebuild   Force a full rebuild of BaseTools binaries.
-  @echo         VS2012         Set the env for VS2012 build.
-  @echo         VS2013         Set the env for VS2013 build.
   @echo         VS2015         Set the env for VS2015 build.
   @echo         VS2017         Set the env for VS2017 build.
   @echo         VS2019         Set the env for VS2019 build.
+  @echo         VS2022         Set the env for VS2022 build.
   @echo.
   @echo  Note that target.template, tools_def.template and build_rules.template
   @echo  will only be copied to target.txt, tools_def.txt and build_rule.txt

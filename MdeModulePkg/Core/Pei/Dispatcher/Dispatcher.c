@@ -1,7 +1,7 @@
 /** @file
   EFI PEI Core dispatch services
 
-Copyright (c) 2006 - 2019, Intel Corporation. All rights reserved.<BR>
+Copyright (c) 2006 - 2024, Intel Corporation. All rights reserved.<BR>
 (C) Copyright 2016 Hewlett Packard Enterprise Development LP<BR>
 SPDX-License-Identifier: BSD-2-Clause-Patent
 
@@ -101,7 +101,7 @@ DiscoverPeimsAndOrderWithApriori (
   DEBUG ((
     DEBUG_INFO,
     "%a(): Found 0x%x PEI FFS files in the %dth FV\n",
-    __FUNCTION__,
+    __func__,
     PeimCount,
     Private->CurrentPeimFvCount
     ));
@@ -1184,7 +1184,12 @@ EvacuateTempRam (
 
   PEI_CORE_FV_HANDLE            PeiCoreFvHandle;
   EFI_PEI_CORE_FV_LOCATION_PPI  *PeiCoreFvLocationPpi;
+  EFI_PEI_HOB_POINTERS          Hob;
+  EDKII_MIGRATION_INFO          *MigrationInfo;
+  TO_MIGRATE_FV_INFO            *ToMigrateFvInfo;
+  UINT32                        FvMigrationFlags;
   EDKII_MIGRATED_FV_INFO        MigratedFvInfo;
+  UINTN                         Index;
 
   ASSERT (Private->PeiMemoryInstalled);
 
@@ -1200,16 +1205,28 @@ EvacuateTempRam (
     PeiCoreFvHandle.FvHandle = (EFI_PEI_FV_HANDLE)SecCoreData->BootFirmwareVolumeBase;
   }
 
-  for (FvIndex = 0; FvIndex < Private->FvCount; FvIndex++) {
-    if (Private->Fv[FvIndex].FvHandle == PeiCoreFvHandle.FvHandle) {
-      CopyMem (&PeiCoreFvHandle, &Private->Fv[FvIndex], sizeof (PEI_CORE_FV_HANDLE));
-      break;
+  if (Private->PeimDispatcherReenter) {
+    //
+    // PEI_CORE should be migrated after dispatcher re-enters from main memory.
+    //
+    for (FvIndex = 0; FvIndex < Private->FvCount; FvIndex++) {
+      if (Private->Fv[FvIndex].FvHandle == PeiCoreFvHandle.FvHandle) {
+        CopyMem (&PeiCoreFvHandle, &Private->Fv[FvIndex], sizeof (PEI_CORE_FV_HANDLE));
+        break;
+      }
     }
+
+    Status = EFI_SUCCESS;
+
+    ConvertPeiCorePpiPointers (Private, &PeiCoreFvHandle);
   }
 
-  Status = EFI_SUCCESS;
-
-  ConvertPeiCorePpiPointers (Private, &PeiCoreFvHandle);
+  Hob.Raw = GetFirstGuidHob (&gEdkiiMigrationInfoGuid);
+  if (Hob.Raw != NULL) {
+    MigrationInfo = GET_GUID_HOB_DATA (Hob);
+  } else {
+    MigrationInfo = NULL;
+  }
 
   for (FvIndex = 0; FvIndex < Private->FvCount; FvIndex++) {
     FvHeader = Private->Fv[FvIndex].FvHeader;
@@ -1224,8 +1241,49 @@ EvacuateTempRam (
           )
         )
     {
+      if ((MigrationInfo == NULL) || (MigrationInfo->MigrateAll == TRUE)) {
+        if (!Private->PeimDispatcherReenter) {
+          //
+          // Migration before dispatcher reentery is supported only when gEdkiiMigrationInfoGuid
+          // HOB is built for selective FV migration.
+          //
+          return EFI_SUCCESS;
+        }
+
+        //
+        // Migrate all FVs and copy raw data
+        //
+        FvMigrationFlags = FLAGS_FV_RAW_DATA_COPY;
+      } else {
+        for (Index = 0; Index < MigrationInfo->ToMigrateFvCount; Index++) {
+          ToMigrateFvInfo = ((TO_MIGRATE_FV_INFO *)(MigrationInfo + 1)) + Index;
+          if (ToMigrateFvInfo->FvOrgBaseOnTempRam == (UINT32)(UINTN)FvHeader) {
+            //
+            // This FV is to migrate
+            //
+            FvMigrationFlags = ToMigrateFvInfo->FvMigrationFlags;
+            break;
+          }
+        }
+
+        if ((Index == MigrationInfo->ToMigrateFvCount) ||
+            ((!Private->PeimDispatcherReenter) &&
+             (((FvMigrationFlags & FLAGS_FV_MIGRATE_BEFORE_PEI_CORE_REENTRY) == 0) ||
+              (FvHeader == PeiCoreFvHandle.FvHandle))))
+        {
+          //
+          // This FV is not expected to migrate
+          //
+          // FV should not be migrated before dispatcher reentry if any of the below condition is true:
+          // a. MigrationInfo HOB is not built with flag FLAGS_FV_MIGRATE_BEFORE_PEI_CORE_REENTRY.
+          // b. FV contains currently executing PEI Core.
+          //
+          continue;
+        }
+      }
+
       //
-      // Allocate page to save the rebased PEIMs, the PEIMs will get dispatched later.
+      // Allocate pages to save the rebased PEIMs, the PEIMs will get dispatched later.
       //
       Status =  PeiServicesAllocatePages (
                   EfiBootServicesCode,
@@ -1234,18 +1292,7 @@ EvacuateTempRam (
                   );
       ASSERT_EFI_ERROR (Status);
       MigratedFvHeader = (EFI_FIRMWARE_VOLUME_HEADER *)(UINTN)FvHeaderAddress;
-
-      //
-      // Allocate pool to save the raw PEIMs, which is used to keep consistent context across
-      // multiple boot and PCR0 will keep the same no matter if the address of allocated page is changed.
-      //
-      Status =  PeiServicesAllocatePages (
-                  EfiBootServicesCode,
-                  EFI_SIZE_TO_PAGES ((UINTN)FvHeader->FvLength),
-                  &FvHeaderAddress
-                  );
-      ASSERT_EFI_ERROR (Status);
-      RawDataFvHeader = (EFI_FIRMWARE_VOLUME_HEADER *)(UINTN)FvHeaderAddress;
+      CopyMem (MigratedFvHeader, FvHeader, (UINTN)FvHeader->FvLength);
 
       DEBUG ((
         DEBUG_VERBOSE,
@@ -1256,17 +1303,33 @@ EvacuateTempRam (
         ));
 
       //
-      // Copy the context to the rebased pages and raw pages, and create hob to save the
-      // information. The MigratedFvInfo HOB will never be produced when
-      // PcdMigrateTemporaryRamFirmwareVolumes is FALSE, because the PCD control the
-      // feature.
+      // Create hob to save MigratedFvInfo, this hob will only be produced when
+      // Migration feature PCD PcdMigrateTemporaryRamFirmwareVolumes is set to TRUE.
       //
-      CopyMem (MigratedFvHeader, FvHeader, (UINTN)FvHeader->FvLength);
-      CopyMem (RawDataFvHeader, MigratedFvHeader, (UINTN)FvHeader->FvLength);
       MigratedFvInfo.FvOrgBase  = (UINT32)(UINTN)FvHeader;
       MigratedFvInfo.FvNewBase  = (UINT32)(UINTN)MigratedFvHeader;
-      MigratedFvInfo.FvDataBase = (UINT32)(UINTN)RawDataFvHeader;
+      MigratedFvInfo.FvDataBase = 0;
       MigratedFvInfo.FvLength   = (UINT32)(UINTN)FvHeader->FvLength;
+
+      //
+      // When FLAGS_FV_RAW_DATA_COPY bit is set, copy the context to the raw pages and
+      // reset raw data base address in MigratedFvInfo hob.
+      //
+      if ((FvMigrationFlags & FLAGS_FV_RAW_DATA_COPY) == FLAGS_FV_RAW_DATA_COPY) {
+        //
+        // Allocate pages to save the raw PEIMs
+        //
+        Status =  PeiServicesAllocatePages (
+                    EfiBootServicesCode,
+                    EFI_SIZE_TO_PAGES ((UINTN)FvHeader->FvLength),
+                    &FvHeaderAddress
+                    );
+        ASSERT_EFI_ERROR (Status);
+        RawDataFvHeader = (EFI_FIRMWARE_VOLUME_HEADER *)(UINTN)FvHeaderAddress;
+        CopyMem (RawDataFvHeader, FvHeader, (UINTN)FvHeader->FvLength);
+        MigratedFvInfo.FvDataBase = (UINT32)(UINTN)RawDataFvHeader;
+      }
+
       BuildGuidDataHob (&gEdkiiMigratedFvInfoGuid, &MigratedFvInfo, sizeof (MigratedFvInfo));
 
       //
@@ -1329,8 +1392,6 @@ EvacuateTempRam (
       ConvertFvHob (Private, (UINTN)FvHeader, (UINTN)MigratedFvHeader);
     }
   }
-
-  RemoveFvHobsInTemporaryMemory (Private);
 
   return Status;
 }
@@ -1630,6 +1691,7 @@ PeiDispatcher (
       Private->CurrentFileHandle    = NULL;
       Private->CurrentPeimCount     = 0;
       Private->CurrentFvFileHandles = NULL;
+      Private->AprioriCount         = 0;
     }
 
     //

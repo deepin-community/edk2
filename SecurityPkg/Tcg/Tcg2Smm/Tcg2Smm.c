@@ -9,7 +9,7 @@
 
   PhysicalPresenceCallback() and MemoryClearCallback() will receive untrusted input and do some check.
 
-Copyright (c) 2015 - 2018, Intel Corporation. All rights reserved.<BR>
+Copyright (c) 2015 - 2024, Intel Corporation. All rights reserved.<BR>
 Copyright (c) Microsoft Corporation.
 SPDX-License-Identifier: BSD-2-Clause-Patent
 
@@ -57,7 +57,7 @@ TpmNvsCommunciate (
   UINTN                   TempCommBufferSize;
   TPM_NVS_MM_COMM_BUFFER  *CommParams;
 
-  DEBUG ((DEBUG_VERBOSE, "%a()\n", __FUNCTION__));
+  DEBUG ((DEBUG_VERBOSE, "%a()\n", __func__));
 
   //
   // If input is invalid, stop processing this SMI
@@ -69,30 +69,42 @@ TpmNvsCommunciate (
   TempCommBufferSize = *CommBufferSize;
 
   if (TempCommBufferSize != sizeof (TPM_NVS_MM_COMM_BUFFER)) {
-    DEBUG ((DEBUG_ERROR, "[%a] MM Communication buffer size is invalid for this handler!\n", __FUNCTION__));
+    DEBUG ((DEBUG_ERROR, "[%a] MM Communication buffer size is invalid for this handler!\n", __func__));
     return EFI_ACCESS_DENIED;
   }
 
-  if (!IsBufferOutsideMmValid ((UINTN)CommBuffer, TempCommBufferSize)) {
-    DEBUG ((DEBUG_ERROR, "[%a] - MM Communication buffer in invalid location!\n", __FUNCTION__));
+  CommParams = (TPM_NVS_MM_COMM_BUFFER *)CommBuffer;
+
+  //
+  // The Primary Buffer validation
+  //
+  if (!Tcg2IsPrimaryBufferValid ((UINTN)CommBuffer, TempCommBufferSize)) {
+    DEBUG ((DEBUG_ERROR, "[%a] - MM Communication buffer in invalid location!\n", __func__));
+    return EFI_ACCESS_DENIED;
+  }
+
+  //
+  // The NonPrimary Buffer validation
+  //
+  if (!Tcg2IsNonPrimaryBufferValid (CommParams->TargetAddress, EFI_PAGES_TO_SIZE (EFI_SIZE_TO_PAGES (sizeof (TCG_NVS))))) {
+    DEBUG ((DEBUG_ERROR, "[%a] - MM NonPrimary buffer pointed from Communication buffer in invalid location!\n", __func__));
     return EFI_ACCESS_DENIED;
   }
 
   //
   // Farm out the job to individual functions based on what was requested.
   //
-  CommParams = (TPM_NVS_MM_COMM_BUFFER *)CommBuffer;
-  Status     = EFI_SUCCESS;
+  Status = EFI_SUCCESS;
   switch (CommParams->Function) {
     case TpmNvsMmExchangeInfo:
-      DEBUG ((DEBUG_VERBOSE, "[%a] - Function requested: MM_EXCHANGE_NVS_INFO\n", __FUNCTION__));
+      DEBUG ((DEBUG_VERBOSE, "[%a] - Function requested: MM_EXCHANGE_NVS_INFO\n", __func__));
       CommParams->RegisteredPpSwiValue = mPpSoftwareSmi;
       CommParams->RegisteredMcSwiValue = mMcSoftwareSmi;
       mTcgNvs                          = (TCG_NVS *)(UINTN)CommParams->TargetAddress;
       break;
 
     default:
-      DEBUG ((DEBUG_INFO, "[%a] - Unknown function %d!\n", __FUNCTION__, CommParams->Function));
+      DEBUG ((DEBUG_INFO, "[%a] - Unknown function %d!\n", __func__, CommParams->Function));
       Status = EFI_UNSUPPORTED;
       break;
   }
@@ -285,7 +297,7 @@ InitializeTcgCommon (
   EFI_HANDLE                     McSwHandle;
   EFI_HANDLE                     NotifyHandle;
 
-  if (!CompareGuid (PcdGetPtr (PcdTpmInstanceGuid), &gEfiTpmDeviceInstanceTpm20DtpmGuid)) {
+  if (!IsTpm20Dtpm ()) {
     DEBUG ((DEBUG_ERROR, "No TPM2 DTPM instance required!\n"));
     return EFI_UNSUPPORTED;
   }
@@ -301,7 +313,7 @@ InitializeTcgCommon (
   Status = gMmst->MmiHandlerRegister (TpmNvsCommunciate, &gTpmNvsMmGuid, &mReadyToLockHandle);
   ASSERT_EFI_ERROR (Status);
   if (EFI_ERROR (Status)) {
-    DEBUG ((DEBUG_ERROR, "[%a] Failed to register NVS communicate as root MM handler - %r!\n", __FUNCTION__, Status));
+    DEBUG ((DEBUG_ERROR, "[%a] Failed to register NVS communicate as root MM handler - %r!\n", __func__, Status));
     goto Cleanup;
   }
 
@@ -311,7 +323,7 @@ InitializeTcgCommon (
   Status = gMmst->MmLocateProtocol (&gEfiSmmSwDispatch2ProtocolGuid, NULL, (VOID **)&SwDispatch);
   ASSERT_EFI_ERROR (Status);
   if (EFI_ERROR (Status)) {
-    DEBUG ((DEBUG_ERROR, "[%a] Failed to locate Sw dispatch protocol - %r!\n", __FUNCTION__, Status));
+    DEBUG ((DEBUG_ERROR, "[%a] Failed to locate Sw dispatch protocol - %r!\n", __func__, Status));
     goto Cleanup;
   }
 
@@ -319,7 +331,7 @@ InitializeTcgCommon (
   Status                    = SwDispatch->Register (SwDispatch, PhysicalPresenceCallback, &SwContext, &PpSwHandle);
   ASSERT_EFI_ERROR (Status);
   if (EFI_ERROR (Status)) {
-    DEBUG ((DEBUG_ERROR, "[%a] Failed to register PP callback as SW MM handler - %r!\n", __FUNCTION__, Status));
+    DEBUG ((DEBUG_ERROR, "[%a] Failed to register PP callback as SW MM handler - %r!\n", __func__, Status));
     goto Cleanup;
   }
 
@@ -329,7 +341,7 @@ InitializeTcgCommon (
   Status                    = SwDispatch->Register (SwDispatch, MemoryClearCallback, &SwContext, &McSwHandle);
   ASSERT_EFI_ERROR (Status);
   if (EFI_ERROR (Status)) {
-    DEBUG ((DEBUG_ERROR, "[%a] Failed to register MC callback as SW MM handler - %r!\n", __FUNCTION__, Status));
+    DEBUG ((DEBUG_ERROR, "[%a] Failed to register MC callback as SW MM handler - %r!\n", __func__, Status));
     goto Cleanup;
   }
 
@@ -342,7 +354,7 @@ InitializeTcgCommon (
   ASSERT_EFI_ERROR (Status);
   if (EFI_ERROR (Status)) {
     // Should not happen
-    DEBUG ((DEBUG_ERROR, "[%a] Failed to locate SMM variable protocol - %r!\n", __FUNCTION__, Status));
+    DEBUG ((DEBUG_ERROR, "[%a] Failed to locate SMM variable protocol - %r!\n", __func__, Status));
     goto Cleanup;
   }
 
@@ -350,7 +362,7 @@ InitializeTcgCommon (
   Status = gMmst->MmRegisterProtocolNotify (&gEfiMmReadyToLockProtocolGuid, TcgMmReadyToLock, &NotifyHandle);
   ASSERT_EFI_ERROR (Status);
   if (EFI_ERROR (Status)) {
-    DEBUG ((DEBUG_ERROR, "[%a] Failed to register ready to lock notification - %r!\n", __FUNCTION__, Status));
+    DEBUG ((DEBUG_ERROR, "[%a] Failed to register ready to lock notification - %r!\n", __func__, Status));
     goto Cleanup;
   }
 
