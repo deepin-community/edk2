@@ -1,0 +1,82 @@
+From 8827f29e83fbaf26fd5cbc1def5dd8e9e7325ce2 Mon Sep 17 00:00:00 2001
+From: jiangxin <jiangxin@hygon.cn>
+Date: Sun, 10 Apr 2022 21:50:15 -0400
+Subject: [PATCH 05/14] UefiCpuPkg/LocalApicLib: Exclude second SendIpi
+ sequence on HYGON hardware
+
+On HYGON processors the second SendIpi in the SendInitSipiSipi and
+SendInitSipiSipiAllExcludingSelf routines is not required, and may cause
+undesired side-effects during MP initialization.
+
+This patch leverages the StandardSignatureIsHygonGenuine check to exclude
+the second SendIpi and its associated MicroSecondDelay (200).
+
+Signed-off-by: Xin Jiang <jiangxin@hygon.cn>
+---
+ UefiCpuPkg/Library/BaseXApicLib/BaseXApicLib.c             | 5 +++--
+ UefiCpuPkg/Library/BaseXApicX2ApicLib/BaseXApicX2ApicLib.c | 5 +++--
+ 2 files changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/UefiCpuPkg/Library/BaseXApicLib/BaseXApicLib.c b/UefiCpuPkg/Library/BaseXApicLib/BaseXApicLib.c
+index c4457d98..d816f03f 100644
+--- a/UefiCpuPkg/Library/BaseXApicLib/BaseXApicLib.c
++++ b/UefiCpuPkg/Library/BaseXApicLib/BaseXApicLib.c
+@@ -22,6 +22,7 @@
+ #include <Library/TimerLib.h>
+ #include <Library/PcdLib.h>
+ #include <Library/CpuLib.h>
++#include <Register/Hygon/Cpuid.h>
+ 
+ //
+ // Library internal functions
+@@ -555,7 +556,7 @@ SendInitSipiSipi (
+   IcrLow.Bits.DeliveryMode = LOCAL_APIC_DELIVERY_MODE_STARTUP;
+   IcrLow.Bits.Level        = 1;
+   SendIpi (IcrLow.Uint32, ApicId);
+-  if (!StandardSignatureIsAuthenticAMD ()) {
++  if (!StandardSignatureIsAuthenticAMD () && !StandardSignatureIsHygonGenuine ()) {
+     MicroSecondDelay (200);
+     SendIpi (IcrLow.Uint32, ApicId);
+   }
+@@ -581,7 +582,7 @@ SendInitSipiSipiAllExcludingSelf (
+   SendInitIpiAllExcludingSelf ();
+   MicroSecondDelay (PcdGet32 (PcdCpuInitIpiDelayInMicroSeconds));
+   SendStartupIpiAllExcludingSelf (StartupRoutine);
+-  if (!StandardSignatureIsAuthenticAMD ()) {
++  if (!StandardSignatureIsAuthenticAMD () && !StandardSignatureIsHygonGenuine ()) {
+     MicroSecondDelay (200);
+     SendStartupIpiAllExcludingSelf (StartupRoutine);
+   }
+diff --git a/UefiCpuPkg/Library/BaseXApicX2ApicLib/BaseXApicX2ApicLib.c b/UefiCpuPkg/Library/BaseXApicX2ApicLib/BaseXApicX2ApicLib.c
+index 0560d38c..ea13cba4 100644
+--- a/UefiCpuPkg/Library/BaseXApicX2ApicLib/BaseXApicX2ApicLib.c
++++ b/UefiCpuPkg/Library/BaseXApicX2ApicLib/BaseXApicX2ApicLib.c
+@@ -24,6 +24,7 @@
+ #include <Library/PcdLib.h>
+ #include <Library/CpuLib.h>
+ #include <IndustryStandard/Tdx.h>
++#include <Register/Hygon/Cpuid.h>
+ 
+ //
+ // Library internal functions
+@@ -794,7 +795,7 @@ SendInitSipiSipi (
+   IcrLow.Bits.DeliveryMode = LOCAL_APIC_DELIVERY_MODE_STARTUP;
+   IcrLow.Bits.Level        = 1;
+   SendIpi (IcrLow.Uint32, ApicId);
+-  if (!StandardSignatureIsAuthenticAMD ()) {
++  if (!StandardSignatureIsAuthenticAMD () && !StandardSignatureIsHygonGenuine ()) {
+     MicroSecondDelay (200);
+     SendIpi (IcrLow.Uint32, ApicId);
+   }
+@@ -820,7 +821,7 @@ SendInitSipiSipiAllExcludingSelf (
+   SendInitIpiAllExcludingSelf ();
+   MicroSecondDelay (PcdGet32 (PcdCpuInitIpiDelayInMicroSeconds));
+   SendStartupIpiAllExcludingSelf (StartupRoutine);
+-  if (!StandardSignatureIsAuthenticAMD ()) {
++  if (!StandardSignatureIsAuthenticAMD () && !StandardSignatureIsHygonGenuine ()) {
+     MicroSecondDelay (200);
+     SendStartupIpiAllExcludingSelf (StartupRoutine);
+   }
+-- 
+2.25.1
+

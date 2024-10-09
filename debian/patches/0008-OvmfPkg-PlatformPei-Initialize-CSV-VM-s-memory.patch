@@ -1,0 +1,214 @@
+From 0ad107b4fdf058d9fcf9fc051342eee476c9aea8 Mon Sep 17 00:00:00 2001
+From: Liu Zixing <liuzixing@hygon.cn>
+Date: Fri, 25 Feb 2022 16:12:38 +0800
+Subject: [PATCH 08/14] OvmfPkg/PlatformPei: Initialize CSV VM's memory
+
+For CSV VM, the Secure Processor builds a temporary nested
+page table to help the guest to run into the PEI phase.
+
+In PEI phase, CSV VM detects the start address and size of the
+guest physical memory.
+
+The CSV VM sends the memory information to the Secure Processor
+to build the permanent nested page table.
+
+Signed-off-by: Xin Jiang <jiangxin@hygon.cn>
+---
+ OvmfPkg/Include/Library/PlatformInitLib.h   |  5 ++
+ OvmfPkg/Library/PlatformInitLib/MemDetect.c |  2 +-
+ OvmfPkg/PlatformPei/Csv.c                   | 82 +++++++++++++++++++++
+ OvmfPkg/PlatformPei/Platform.c              |  2 +
+ OvmfPkg/PlatformPei/Platform.h              | 10 +++
+ OvmfPkg/PlatformPei/PlatformPei.inf         |  4 +
+ 6 files changed, 104 insertions(+), 1 deletion(-)
+ create mode 100644 OvmfPkg/PlatformPei/Csv.c
+
+diff --git a/OvmfPkg/Include/Library/PlatformInitLib.h b/OvmfPkg/Include/Library/PlatformInitLib.h
+index 57b18b94..6c28c7fb 100644
+--- a/OvmfPkg/Include/Library/PlatformInitLib.h
++++ b/OvmfPkg/Include/Library/PlatformInitLib.h
+@@ -151,6 +151,11 @@ PlatformGetSystemMemorySizeBelow4gb (
+   IN EFI_HOB_PLATFORM_INFO  *PlatformInfoHob
+   );
+ 
++UINT64
++EFIAPI
++PlatformGetSystemMemorySizeAbove4gb (
++  );
++
+ /**
+   Initialize the PhysMemAddressWidth field in PlatformInfoHob based on guest RAM size.
+ **/
+diff --git a/OvmfPkg/Library/PlatformInitLib/MemDetect.c b/OvmfPkg/Library/PlatformInitLib/MemDetect.c
+index bd6c79e4..fa6cce7e 100644
+--- a/OvmfPkg/Library/PlatformInitLib/MemDetect.c
++++ b/OvmfPkg/Library/PlatformInitLib/MemDetect.c
+@@ -440,8 +440,8 @@ PlatformGetSystemMemorySizeBelow4gb (
+   PlatformInfoHob->LowMemory = (UINT32)(((UINTN)((Cmos0x35 << 8) + Cmos0x34) << 16) + SIZE_16MB);
+ }
+ 
+-STATIC
+ UINT64
++EFIAPI
+ PlatformGetSystemMemorySizeAbove4gb (
+   )
+ {
+diff --git a/OvmfPkg/PlatformPei/Csv.c b/OvmfPkg/PlatformPei/Csv.c
+new file mode 100644
+index 00000000..5ab83312
+--- /dev/null
++++ b/OvmfPkg/PlatformPei/Csv.c
+@@ -0,0 +1,82 @@
++/** @file
++
++  CSV initialization in PEI
++
++  Copyright (c) 2022, HYGON. All rights reserved.<BR>
++
++  This program and the accompanying materials are licensed and made available
++  under the terms and conditions of the BSD License which accompanies this
++  distribution.  The full text of the license may be found at
++  http://opensource.org/licenses/bsd-license.php
++
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++
++**/
++
++#include <Library/BaseLib.h>
++#include <Uefi/UefiBaseType.h>
++#include <Library/DebugLib.h>
++#include <Library/BaseMemoryLib.h>
++#include <Library/HobLib.h>
++#include <Library/CsvLib.h>
++#include <Library/MemEncryptSevLib.h>
++#include <Library/PlatformInitLib.h>
++
++#include "Platform.h"
++
++VOID
++CsvInitializeMemInfo (
++  IN EFI_HOB_PLATFORM_INFO  *PlatformInfoHob
++  )
++{
++  UINT64                      LowerMemorySize;
++  UINT64                      UpperMemorySize;
++
++  if (!CsvIsEnabled ()) {
++    return ;
++  }
++
++  LowerMemorySize = PlatformInfoHob->LowMemory;
++  UpperMemorySize = PlatformGetSystemMemorySizeAbove4gb ();
++
++  CsvUpdateMapLowerMemory (
++    0,
++    LowerMemorySize >> EFI_PAGE_SHIFT
++    );
++
++  if (UpperMemorySize > 0) {
++    CsvUpdateMapUpperMemory (
++      BASE_4GB,
++      UpperMemorySize >> EFI_PAGE_SHIFT
++      );
++  }
++
++  BuildMemoryAllocationHob (
++    (EFI_PHYSICAL_ADDRESS)(UINTN) FixedPcdGet32 (PcdCsvDefaultSecureCallBase),
++    (UINT64)(UINTN) FixedPcdGet32 (PcdCsvDefaultSecureCallSize),
++    EfiReservedMemoryType
++    );
++}
++
++VOID
++CsvInitializeGhcb (
++  VOID
++  )
++{
++  RETURN_STATUS        EncryptStatus;
++
++  if (!CsvIsEnabled ()) {
++    return ;
++  }
++
++  //
++  // Encrypt the SecGhcb as it's not a Ghcb any more
++  //
++  EncryptStatus = MemEncryptSevSetPageEncMask(
++                    0,
++                    PcdGet32 (PcdOvmfSecGhcbBase),
++                    1
++                    );
++  ASSERT_RETURN_ERROR (EncryptStatus);
++}
+diff --git a/OvmfPkg/PlatformPei/Platform.c b/OvmfPkg/PlatformPei/Platform.c
+index 01145297..2a4ce641 100644
+--- a/OvmfPkg/PlatformPei/Platform.c
++++ b/OvmfPkg/PlatformPei/Platform.c
+@@ -346,6 +346,7 @@ InitializePlatform (
+   PlatformQemuUc32BaseInitialization (PlatformInfoHob);
+ 
+   InitializeRamRegions (PlatformInfoHob);
++  CsvInitializeMemInfo (PlatformInfoHob);
+ 
+   if (PlatformInfoHob->BootMode != BOOT_ON_S3_RESUME) {
+     if (!PlatformInfoHob->SmmSmramRequire) {
+@@ -366,6 +367,7 @@ InitializePlatform (
+     MiscInitialization (PlatformInfoHob);
+     PlatformIdInitialization (PeiServices);
+   }
++  CsvInitializeGhcb();
+ 
+   IntelTdxInitialize ();
+   InstallFeatureControlCallback (PlatformInfoHob);
+diff --git a/OvmfPkg/PlatformPei/Platform.h b/OvmfPkg/PlatformPei/Platform.h
+index 0a59547c..e4271101 100644
+--- a/OvmfPkg/PlatformPei/Platform.h
++++ b/OvmfPkg/PlatformPei/Platform.h
+@@ -111,4 +111,14 @@ SevInitializeRam (
+   VOID
+   );
+ 
++VOID
++CsvInitializeMemInfo (
++  IN EFI_HOB_PLATFORM_INFO  *PlatformInfoHob
++  );
++
++VOID
++CsvInitializeGhcb (
++  VOID
++  );
++
+ #endif // _PLATFORM_PEI_H_INCLUDED_
+diff --git a/OvmfPkg/PlatformPei/PlatformPei.inf b/OvmfPkg/PlatformPei/PlatformPei.inf
+index 0bb1a462..75a1b9e4 100644
+--- a/OvmfPkg/PlatformPei/PlatformPei.inf
++++ b/OvmfPkg/PlatformPei/PlatformPei.inf
+@@ -35,6 +35,7 @@
+   PlatformId.h
+   IntelTdx.c
+   SmmRelocation.c
++  Csv.c
+ 
+ [Packages]
+   EmbeddedPkg/EmbeddedPkg.dec
+@@ -71,6 +72,7 @@
+   CcExitLib
+   PlatformInitLib
+   SmmRelocationLib
++  CsvLib
+ 
+ [Pcd]
+   gUefiOvmfPkgTokenSpaceGuid.PcdOvmfPeiMemFvBase
+@@ -139,6 +141,8 @@
+   gUefiOvmfPkgTokenSpaceGuid.PcdOvmfWorkAreaSize
+   gUefiOvmfPkgTokenSpaceGuid.PcdOvmfSnpSecretsBase
+   gUefiOvmfPkgTokenSpaceGuid.PcdOvmfSnpSecretsSize
++  gUefiOvmfPkgTokenSpaceGuid.PcdCsvDefaultSecureCallBase
++  gUefiOvmfPkgTokenSpaceGuid.PcdCsvDefaultSecureCallSize
+ 
+ [FeaturePcd]
+   gUefiOvmfPkgTokenSpaceGuid.PcdSmmSmramRequire
+-- 
+2.25.1
+

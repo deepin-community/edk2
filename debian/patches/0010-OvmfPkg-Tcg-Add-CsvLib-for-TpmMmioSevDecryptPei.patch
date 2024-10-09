@@ -1,0 +1,41 @@
+From 7d879f58f6e3277d6b7104e28d05e0072753a3fa Mon Sep 17 00:00:00 2001
+From: Xin Jiang <jiangxin@hygon.cn>
+Date: Fri, 18 Aug 2023 17:17:28 +0800
+Subject: [PATCH 10/14] OvmfPkg/Tcg: Add CsvLib for TpmMmioSevDecryptPei
+
+Also add CsvLib to OvmfPkg/IntelTdx/IntelTdxX64.dsc to resolve
+interface dependencies.
+
+Signed-off-by: Xin Jiang <jiangxin@hygon.cn>
+---
+ OvmfPkg/IntelTdx/IntelTdxX64.dsc                          | 1 +
+ OvmfPkg/Tcg/TpmMmioSevDecryptPei/TpmMmioSevDecryptPei.inf | 1 +
+ 2 files changed, 2 insertions(+)
+
+diff --git a/OvmfPkg/IntelTdx/IntelTdxX64.dsc b/OvmfPkg/IntelTdx/IntelTdxX64.dsc
+index fc133259..7f0105c8 100644
+--- a/OvmfPkg/IntelTdx/IntelTdxX64.dsc
++++ b/OvmfPkg/IntelTdx/IntelTdxX64.dsc
+@@ -172,6 +172,7 @@
+   PeiHardwareInfoLib|OvmfPkg/Library/HardwareInfoLib/PeiHardwareInfoLib.inf
+   DxeHardwareInfoLib|OvmfPkg/Library/HardwareInfoLib/DxeHardwareInfoLib.inf
+   ImagePropertiesRecordLib|MdeModulePkg/Library/ImagePropertiesRecordLib/ImagePropertiesRecordLib.inf
++  CsvLib|OvmfPkg/Library/CsvLib/CsvLib.inf
+ 
+   LockBoxLib|OvmfPkg/Library/LockBoxLib/LockBoxBaseLib.inf
+   CustomizedDisplayLib|MdeModulePkg/Library/CustomizedDisplayLib/CustomizedDisplayLib.inf
+diff --git a/OvmfPkg/Tcg/TpmMmioSevDecryptPei/TpmMmioSevDecryptPei.inf b/OvmfPkg/Tcg/TpmMmioSevDecryptPei/TpmMmioSevDecryptPei.inf
+index 51ad6d0d..402e4c9a 100644
+--- a/OvmfPkg/Tcg/TpmMmioSevDecryptPei/TpmMmioSevDecryptPei.inf
++++ b/OvmfPkg/Tcg/TpmMmioSevDecryptPei/TpmMmioSevDecryptPei.inf
+@@ -29,6 +29,7 @@
+   PcdLib
+   PeimEntryPoint
+   PeiServicesLib
++  CsvLib
+ 
+ [Ppis]
+   gOvmfTpmMmioAccessiblePpiGuid                      ## PRODUCES
+-- 
+2.25.1
+

@@ -7,3 +7,14 @@ mbedtls-disable.diff
 0001-MdePkg-BaseLib-RISC-V-Add-FPU-CSR-constants.patch
 0002-UefiCpuPkg-RiscV64-initialize-FPU.patch
 0003-OvmfPkg-RiscV64-build-BaseRiscVFpuLib.patch
+0004-MdePkg-Add-StandardSignatureIsHygonGenuine-in-BaseCp.patch
+0005-UefiCpuPkg-LocalApicLib-Exclude-second-SendIpi-seque.patch
+0006-OvmfPkg-Add-CSV-secure-call-library-on-Hygon-CPU.patch
+0007-OvmfPkg-ResetVector-Support-CSV-in-ResetVector-phase.patch
+0008-OvmfPkg-PlatformPei-Initialize-CSV-VM-s-memory.patch
+0009-OvmfPkg-BaseMemcryptSevLib-update-page-status-to-Sec.patch
+0010-OvmfPkg-Tcg-Add-CsvLib-for-TpmMmioSevDecryptPei.patch
+0011-OvmfPkg-Add-CsvDxe-driver.patch
+0012-OvmfPkg-IoMmuDxe-Add-CsvIoMmu-protocol.patch
+0013-OvmfPkg-Use-classic-mmio-window-for-CSV-guest.patch
+0014-OvmfPkg-IoMmuDxe-Implement-SetAttribute-of-CsvIoMmu.patch

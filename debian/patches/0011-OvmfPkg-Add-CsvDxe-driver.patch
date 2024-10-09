@@ -1,0 +1,641 @@
+From 96993ce354a9d455758a93c128d146fb6e685278 Mon Sep 17 00:00:00 2001
+From: Liu Zixing <liuzixing@hygon.cn>
+Date: Fri, 25 Feb 2022 16:34:25 +0800
+Subject: [PATCH 11/14] OvmfPkg: Add CsvDxe driver
+
+CsvDxe creates and installs the CsvSharedMemory protocol.
+
+CSV VM needs the shared memory to exchange data with external devices.
+
+To improve the performance, CsvSharedMemory protocol pre-allocates
+huge shared memory chunk as a pool.
+
+When reqeusted,  it allocates small pieces of shared memory from the
+pool and records the allocated memory in a list.
+
+When finished, the shared memory pieces are returned to the pool and
+removed from the record list.
+
+Signed-off-by: Xin Jiang <jiangxin@hygon.cn>
+---
+ OvmfPkg/AmdSev/AmdSevX64.dsc               |   1 +
+ OvmfPkg/AmdSev/AmdSevX64.fdf               |   1 +
+ OvmfPkg/CsvDxe/CsvDxe.c                    | 104 +++++++++++
+ OvmfPkg/CsvDxe/CsvDxe.inf                  |  45 +++++
+ OvmfPkg/CsvDxe/CsvSharedMemory.c           | 208 +++++++++++++++++++++
+ OvmfPkg/CsvDxe/CsvSharedMemory.h           |  29 +++
+ OvmfPkg/Include/Protocol/CsvSharedMemory.h |  99 ++++++++++
+ OvmfPkg/OvmfPkg.dec                        |   1 +
+ OvmfPkg/OvmfPkgIa32X64.dsc                 |   1 +
+ OvmfPkg/OvmfPkgIa32X64.fdf                 |   1 +
+ OvmfPkg/OvmfPkgX64.dsc                     |   1 +
+ OvmfPkg/OvmfPkgX64.fdf                     |   1 +
+ 12 files changed, 492 insertions(+)
+ create mode 100644 OvmfPkg/CsvDxe/CsvDxe.c
+ create mode 100644 OvmfPkg/CsvDxe/CsvDxe.inf
+ create mode 100644 OvmfPkg/CsvDxe/CsvSharedMemory.c
+ create mode 100644 OvmfPkg/CsvDxe/CsvSharedMemory.h
+ create mode 100644 OvmfPkg/Include/Protocol/CsvSharedMemory.h
+
+diff --git a/OvmfPkg/AmdSev/AmdSevX64.dsc b/OvmfPkg/AmdSev/AmdSevX64.dsc
+index 3eb494b3..a69c393a 100644
+--- a/OvmfPkg/AmdSev/AmdSevX64.dsc
++++ b/OvmfPkg/AmdSev/AmdSevX64.dsc
+@@ -741,6 +741,7 @@
+     PciLib|MdePkg/Library/BasePciLibCf8/BasePciLibCf8.inf
+   }
+   OvmfPkg/IoMmuDxe/IoMmuDxe.inf
++  OvmfPkg/CsvDxe/CsvDxe.inf
+ 
+   #
+   # Variable driver stack (non-SMM)
+diff --git a/OvmfPkg/AmdSev/AmdSevX64.fdf b/OvmfPkg/AmdSev/AmdSevX64.fdf
+index a544f80f..6eb9d087 100644
+--- a/OvmfPkg/AmdSev/AmdSevX64.fdf
++++ b/OvmfPkg/AmdSev/AmdSevX64.fdf
+@@ -307,6 +307,7 @@ INF  OvmfPkg/VirtioGpuDxe/VirtioGpu.inf
+ INF  OvmfPkg/PlatformDxe/Platform.inf
+ INF  OvmfPkg/AmdSevDxe/AmdSevDxe.inf
+ INF  OvmfPkg/IoMmuDxe/IoMmuDxe.inf
++INF  OvmfPkg/CsvDxe/CsvDxe.inf
+ 
+ 
+ #
+diff --git a/OvmfPkg/CsvDxe/CsvDxe.c b/OvmfPkg/CsvDxe/CsvDxe.c
+new file mode 100644
+index 00000000..d7edf3b9
+--- /dev/null
++++ b/OvmfPkg/CsvDxe/CsvDxe.c
+@@ -0,0 +1,104 @@
++/** @file
++
++  Hygon CSV DXE.
++
++  Copyright (c) 2022, HYGON. All rights reserved.<BR>
++
++  This program and the accompanying materials are licensed and made available
++  under the terms and conditions of the BSD License which accompanies this
++  distribution.  The full text of the license may be found at
++  http://opensource.org/licenses/bsd-license.php
++
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS, WITHOUT
++  WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++
++**/
++
++#include <Library/BaseLib.h>
++#include <Library/BaseMemoryLib.h>
++#include <Library/DebugLib.h>
++#include <Library/DxeServicesTableLib.h>
++#include <Library/MemoryAllocationLib.h>
++#include <Library/PcdLib.h>
++#include <Library/CsvLib.h>
++#include <Library/UefiBootServicesTableLib.h>
++#include <Protocol/CsvSharedMemory.h>
++#include <Library/MemEncryptSevLib.h>
++#include "CsvSharedMemory.h"
++
++
++#define HUGE_PAGE_SIZE      0x200000ULL
++
++EFI_STATUS
++EFIAPI
++CsvDxeEntryPoint (
++  IN EFI_HANDLE         ImageHandle,
++  IN EFI_SYSTEM_TABLE   *SystemTable
++  )
++{
++  EFI_STATUS                       Status;
++  RETURN_STATUS                    DecryptStatus;
++  CSV_SHARED_MEMORY_PROTOCOL      *SharedMemory;
++  EFI_PHYSICAL_ADDRESS             Memory;
++  EFI_PHYSICAL_ADDRESS             EndMemory;
++  EFI_ALLOCATE_TYPE                AllocateType;
++  UINT64                           Size;
++
++  Status = CsvInstallSharedMemoryProtocol ();
++
++  if (EFI_ERROR (Status)) {
++    DEBUG ((EFI_D_ERROR, "fail to install CsvSharedMemory protocol\n"));
++    return Status;
++  }
++
++  //
++  // Do nothing more when CSV is not enabled
++  //
++  if (!CsvIsEnabled ()) {
++    return EFI_SUCCESS;
++  }
++
++  Status = gBS->LocateProtocol (
++                  &gCsvSharedMemoryProtocolGuid,
++                  NULL,
++                  (VOID**)&SharedMemory
++                  );
++
++  if (Status == EFI_SUCCESS) {
++
++    AllocateType = AllocateMaxAddress;
++    Memory     = BASE_4GB - 1;
++
++    Status = gBS->AllocatePages (
++                    AllocateType,
++                    EfiBootServicesData,
++                    CSV_SHARED_MEMORY_PAGE_NUMBER,
++                    &Memory
++                    );
++
++    if (EFI_ERROR (Status)) {
++      DEBUG ((DEBUG_ERROR, "fail to allocate CsvSharedMemory\n", SharedMemory));
++    } else {
++      //Align to huge page
++      EndMemory = (Memory + CSV_SHARED_MEMORY_SIZE) & (~(HUGE_PAGE_SIZE - 1));
++      Memory = ALIGN_VALUE(Memory, HUGE_PAGE_SIZE);
++      Size  = (EndMemory > Memory) ? EndMemory - Memory : 0;
++      DecryptStatus = MemEncryptSevClearPageEncMask (
++                      0,
++                      Memory,
++                      Size >> EFI_PAGE_SHIFT
++                      );
++      ASSERT_RETURN_ERROR (DecryptStatus);
++
++      SharedMemory->CsvInitializeSharedMemoryList (
++                    SharedMemory,
++                    (UINT64)Memory,
++                    Size
++                    );
++        }
++  } else {
++    DEBUG ((DEBUG_ERROR, "fail to LocateProtocol gCsvSharedMemoryProtocolGuid\n"));
++  }
++
++  return EFI_SUCCESS;
++}
+diff --git a/OvmfPkg/CsvDxe/CsvDxe.inf b/OvmfPkg/CsvDxe/CsvDxe.inf
+new file mode 100644
+index 00000000..0dc88605
+--- /dev/null
++++ b/OvmfPkg/CsvDxe/CsvDxe.inf
+@@ -0,0 +1,45 @@
++#/** @file
++#
++#  Secure Isolated Virtualization
++#
++#  Copyright (c) 2022, HYGON Inc. All rights reserved.<BR>
++#
++#  This program and the accompanying materials are licensed and made available
++#  under the terms and conditions of the BSD License which accompanies this
++#  distribution.  The full text of the license may be found at
++#  http://opensource.org/licenses/bsd-license.php
++#
++#  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++#  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR
++#  IMPLIED.
++#
++#**/
++
++[Defines]
++  INF_VERSION                    = 1.25
++  BASE_NAME                      = CsvDxe
++  FILE_GUID                      = 829310c0-b9c4-11e9-9e16-9b10d744f884
++  MODULE_TYPE                    = DXE_DRIVER
++  VERSION_STRING                 = 1.0
++  ENTRY_POINT                    = CsvDxeEntryPoint
++
++[Sources]
++  CsvDxe.c
++  CsvSharedMemory.c
++
++[Packages]
++  MdePkg/MdePkg.dec
++  OvmfPkg/OvmfPkg.dec
++
++[LibraryClasses]
++  BaseLib
++  BaseMemoryLib
++  DebugLib
++  CsvLib
++  UefiDriverEntryPoint
++
++[Depex]
++  TRUE
++
++[Protocols]
++  gCsvSharedMemoryProtocolGuid
+diff --git a/OvmfPkg/CsvDxe/CsvSharedMemory.c b/OvmfPkg/CsvDxe/CsvSharedMemory.c
+new file mode 100644
+index 00000000..fbebc615
+--- /dev/null
++++ b/OvmfPkg/CsvDxe/CsvSharedMemory.c
+@@ -0,0 +1,208 @@
++/** @file
++
++  The protocol provides allocate, free the CSV shared memory.
++
++  Copyright (c) 2022, HYGON. All rights reserved.<BR>
++
++  This program and the accompanying materials are licensed and made available
++  under the terms and conditions of the BSD License which accompanies this
++  distribution.  The full text of the license may be found at
++  http://opensource.org/licenses/bsd-license.php
++
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++
++**/
++
++#include <Library/BaseLib.h>
++#include <Uefi/UefiBaseType.h>
++#include <Library/CsvLib.h>
++#include <Library/MemoryAllocationLib.h>
++#include <Library/DebugLib.h>
++#include <Library/UefiBootServicesTableLib.h>
++#include <Protocol/CsvSharedMemory.h>
++
++
++STATIC LIST_ENTRY        CsvSharedMemoryList  = INITIALIZE_LIST_HEAD_VARIABLE (CsvSharedMemoryList);
++
++//
++//  Insert the initial shared memory address and length to list.
++//
++
++EFI_STATUS
++EFIAPI
++CsvInitializeSharedMemoryList (
++  IN  CSV_SHARED_MEMORY_PROTOCOL  *Protocol,
++  IN  UINT64                      Address,
++  IN  UINT64                      Length
++  )
++{
++  CsvSharedMemoryEntry  *Entry;
++
++  if (Length == 0) {
++    return EFI_INVALID_PARAMETER;
++  }
++
++  Entry = AllocatePool (sizeof (*Entry));
++  if (Entry == NULL) {
++    DEBUG((DEBUG_ERROR, "CsvInitializeSharedMemoryList AllocatePool error\n"));
++    return EFI_OUT_OF_RESOURCES;
++  }
++
++  Entry->Start      = Address;
++  Entry->Length     = Length;
++  Entry->Signature  = CSV_SHARED_MEMORY_SIGNATURE;
++
++  InsertTailList (&CsvSharedMemoryList, &Entry->Link);
++
++  return EFI_SUCCESS;
++}
++
++EFI_STATUS
++EFIAPI
++CsvAllocateSharedMemory (
++  IN  CSV_SHARED_MEMORY_PROTOCOL  *Protocol,
++  IN  UINTN                       NumberOfPages,
++  OUT UINT64                      *Memory
++  )
++{
++  LIST_ENTRY             *Link;
++  CsvSharedMemoryEntry   *Entry;
++  UINT64                 MemoryLength;
++
++  MemoryLength = (UINT64)NumberOfPages << EFI_PAGE_SHIFT;
++
++  for (Link = CsvSharedMemoryList.ForwardLink; Link != &CsvSharedMemoryList; Link = Link->ForwardLink) {
++    Entry = CR (Link, CsvSharedMemoryEntry, Link, CSV_SHARED_MEMORY_SIGNATURE);
++    if (Entry->Length > MemoryLength) {
++        *Memory = (EFI_PHYSICAL_ADDRESS)Entry->Start;
++        Entry->Start = *Memory + MemoryLength;
++        Entry->Length -= MemoryLength;
++        break;
++    } else if (Entry->Length == MemoryLength) {
++        *Memory = (EFI_PHYSICAL_ADDRESS)Entry->Start;
++        RemoveEntryList (&Entry->Link);
++        FreePool (Entry);
++        break;
++    }
++  }
++
++
++
++  if (Link == &CsvSharedMemoryList) {
++      DEBUG ((EFI_D_ERROR, "CsvAllocateSharedMemory fail to allocate %u pages\n", NumberOfPages));
++      return EFI_NOT_FOUND;
++  }
++  else {
++      return EFI_SUCCESS;
++  }
++}
++
++
++
++EFI_STATUS
++EFIAPI
++CsvFreeSharedMemory (
++   IN  CSV_SHARED_MEMORY_PROTOCOL  *Protocol,
++   IN  UINTN                       Pages,
++   IN  UINT64                      HostAddress
++  )
++{
++  LIST_ENTRY             *Link;
++  CsvSharedMemoryEntry   *Entry;
++  CsvSharedMemoryEntry   *NewEntry;
++  UINT64                 Memory;
++  UINT64                 MemoryLength;
++  CsvSharedMemoryEntry   *Previous = NULL;
++  BOOLEAN                Inserted = FALSE;
++
++  Memory = (UINT64)HostAddress;
++  MemoryLength = (UINT64)Pages << EFI_PAGE_SHIFT;
++
++  for (Link = CsvSharedMemoryList.ForwardLink;
++       Link != &CsvSharedMemoryList;
++       Link = Link->ForwardLink) {
++    Entry = CR (Link, CsvSharedMemoryEntry, Link, CSV_SHARED_MEMORY_SIGNATURE);
++    if (Inserted)
++      goto Merge;
++    if (Entry->Start + Entry->Length == Memory) {
++      Entry->Length += MemoryLength;
++      Inserted = TRUE;
++      goto Merge;
++    } else if (Memory + MemoryLength < Entry->Start) {
++      NewEntry = AllocatePool (sizeof *NewEntry);
++      if (NewEntry == NULL) {
++        return EFI_OUT_OF_RESOURCES;
++      }
++
++      NewEntry->Start  = Memory;
++      NewEntry->Length = MemoryLength;
++      NewEntry->Signature  = CSV_SHARED_MEMORY_SIGNATURE;
++
++      InsertTailList (&Entry->Link, &NewEntry->Link);
++      break;
++    } else if (Memory + MemoryLength == Entry->Start) {
++      Entry->Start = Memory;
++      Entry->Length += MemoryLength;
++      break;
++    } else if (Link->ForwardLink == &CsvSharedMemoryList) {
++      //
++      // Insert to tail
++      //
++      NewEntry = AllocatePool (sizeof *NewEntry);
++      if (NewEntry == NULL) {
++        return EFI_OUT_OF_RESOURCES;
++      }
++
++      NewEntry->Start  = Memory;
++      NewEntry->Length = MemoryLength;
++      NewEntry->Signature  = CSV_SHARED_MEMORY_SIGNATURE;
++      InsertHeadList (Link, &NewEntry->Link);
++      break;
++    }
++
++Merge:
++    if (Previous) {
++      if (Previous->Start + Previous->Length == Entry->Start) {
++        Entry->Start = Previous->Start;
++        Entry->Length += Previous->Length;
++        RemoveEntryList (&Previous->Link);
++        FreePool (Previous);
++      }
++      break;
++    } else {
++      Previous = Entry;
++    }
++  }
++
++  return EFI_SUCCESS;
++}
++
++CSV_SHARED_MEMORY_PROTOCOL  mCsvSharedMemory = {
++  CsvInitializeSharedMemoryList,
++  CsvAllocateSharedMemory,
++  CsvFreeSharedMemory
++};
++
++/**
++  Initialize CsvSharedMemory Protocol.
++
++**/
++EFI_STATUS
++EFIAPI
++CsvInstallSharedMemoryProtocol (
++  VOID
++  )
++{
++  EFI_STATUS  Status;
++  EFI_HANDLE  Handle;
++
++  Handle = NULL;
++  Status = gBS->InstallMultipleProtocolInterfaces (
++                  &Handle,
++                  &gCsvSharedMemoryProtocolGuid,
++                  &mCsvSharedMemory,
++                  NULL
++                  );
++  return Status;
++}
+diff --git a/OvmfPkg/CsvDxe/CsvSharedMemory.h b/OvmfPkg/CsvDxe/CsvSharedMemory.h
+new file mode 100644
+index 00000000..16348181
+--- /dev/null
++++ b/OvmfPkg/CsvDxe/CsvSharedMemory.h
+@@ -0,0 +1,29 @@
++/** @file
++  CSV shared memory management protocol
++
++  Copyright (C) 2022 HYGON.
++
++  This program and the accompanying materials
++  are licensed and made available under the terms and conditions of the BSD License
++  which accompanies this distribution.  The full text of the license may be found at
++  http://opensource.org/licenses/bsd-license.php
++
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++
++**/
++
++#ifndef _CSV_SHARED_MEMORY_H_
++#define _CSV_SHARED_MEMORY_H_
++
++//
++//  Install SHARED_MEMORY protocol .
++//
++
++EFI_STATUS
++EFIAPI
++CsvInstallSharedMemoryProtocol (
++  VOID
++  );
++
++#endif
+diff --git a/OvmfPkg/Include/Protocol/CsvSharedMemory.h b/OvmfPkg/Include/Protocol/CsvSharedMemory.h
+new file mode 100644
+index 00000000..ba62f3a4
+--- /dev/null
++++ b/OvmfPkg/Include/Protocol/CsvSharedMemory.h
+@@ -0,0 +1,99 @@
++/** @file
++  CSV shared memory management protocol
++
++  Copyright (C) 2022 HYGON.
++
++  This program and the accompanying materials
++  are licensed and made available under the terms and conditions of the BSD License
++  which accompanies this distribution.  The full text of the license may be found at
++  http://opensource.org/licenses/bsd-license.php
++
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++
++**/
++
++#ifndef __PROTOCOL_CSV_SHARED_MEMORY_H__
++#define __PROTOCOL_CSV_SHARED_MEMORY_H__
++
++#define  CSV_SHARED_MEMORY_PAGE_NUMBER       (16384ULL)
++#define  CSV_SHARED_MEMORY_SIZE              ((CSV_SHARED_MEMORY_PAGE_NUMBER)*(SIZE_4KB))
++
++///
++/// Forward declaration
++///
++typedef struct _CSV_SHARED_MEMORY_PROTOCOL CSV_SHARED_MEMORY_PROTOCOL;
++
++
++///
++/// Function prototypes
++///
++
++/**
++  Initialize the list to manage the CSV shared memory.
++  Insert the start address and length.
++
++  @param This           A pointer to CSV_SHARED_MEMORY_PROTOCOL instance.
++  @param Address        The start address of the shared memory.
++  @param Length         The length of the shared memory.
++
++**/
++typedef
++EFI_STATUS
++(EFIAPI *CSV_INITIALIZE_SHARED_MEMORY_LIST)(
++  IN  CSV_SHARED_MEMORY_PROTOCOL *This,
++  IN  UINT64                      Address,
++  IN  UINT64                      Length
++  );
++
++/**
++  Allocate buffer from the shared memory.
++
++  @param This           A pointer to CSV_SHARED_MEMORY_PROTOCOL instance.
++  @param NumberOfPages  The length of page number.
++  @param Memory         When success, allocated memory will be stored in.
++
++  @return  On success, EFI_SUCCESS. Otherwise an errno value
++           indicating the type of failure.
++**/
++typedef
++EFI_STATUS
++(EFIAPI *CSV_ALLOCATE_SHARED_MEMORY)(
++  IN  CSV_SHARED_MEMORY_PROTOCOL *This,
++  IN  UINTN                       NumberOfPages,
++  OUT UINT64                      *Memory
++  );
++
++/**
++  Free buffer to the shared memory.
++
++  @param This           A pointer to CSV_SHARED_MEMORY_PROTOCOL instance.
++  @param NumberOfPages  The page number.
++  @param Memory         The allocated memory to be freed.
++
++  @return  On success, EFI_SUCCESS. Otherwise an errno value
++           indicating the type of failure.
++**/
++typedef
++EFI_STATUS
++(EFIAPI *CSV_FREE_SHARED_MEMORY)(
++  IN  CSV_SHARED_MEMORY_PROTOCOL *This,
++  IN  UINTN                       NumberOfPages,
++  IN  UINT64                      Memory
++  );
++
++///
++/// Protocol structure
++///
++struct _CSV_SHARED_MEMORY_PROTOCOL {
++  //
++  // Protocol data fields
++  //
++  CSV_INITIALIZE_SHARED_MEMORY_LIST   CsvInitializeSharedMemoryList;
++  CSV_ALLOCATE_SHARED_MEMORY          CsvAllocateSharedMemory;
++  CSV_FREE_SHARED_MEMORY              CsvFreeSharedMemory;
++};
++
++extern EFI_GUID gCsvSharedMemoryProtocolGuid;
++
++#endif
+diff --git a/OvmfPkg/OvmfPkg.dec b/OvmfPkg/OvmfPkg.dec
+index dec85152..e7dc7a67 100644
+--- a/OvmfPkg/OvmfPkg.dec
++++ b/OvmfPkg/OvmfPkg.dec
+@@ -200,6 +200,7 @@
+   gQemuAcpiTableNotifyProtocolGuid      = {0x928939b2, 0x4235, 0x462f, {0x95, 0x80, 0xf6, 0xa2, 0xb2, 0xc2, 0x1a, 0x4f}}
+   gEfiMpInitLibMpDepProtocolGuid        = {0xbb00a5ca, 0x8ce,  0x462f, {0xa5, 0x37, 0x43, 0xc7, 0x4a, 0x82, 0x5c, 0xa4}}
+   gEfiMpInitLibUpDepProtocolGuid        = {0xa9e7cef1, 0x5682, 0x42cc, {0xb1, 0x23, 0x99, 0x30, 0x97, 0x3f, 0x4a, 0x9f}}
++  gCsvSharedMemoryProtocolGuid          = {0x0c795ed0, 0xbf0a, 0x11e9, {0x99, 0xbe, 0x50, 0x9a, 0x4c, 0x01, 0x1e, 0xd1}}
+ 
+ [PcdsFixedAtBuild]
+   gUefiOvmfPkgTokenSpaceGuid.PcdOvmfPeiMemFvBase|0x0|UINT32|0
+diff --git a/OvmfPkg/OvmfPkgIa32X64.dsc b/OvmfPkg/OvmfPkgIa32X64.dsc
+index 9e9a22a0..7a8674b6 100644
+--- a/OvmfPkg/OvmfPkgIa32X64.dsc
++++ b/OvmfPkg/OvmfPkgIa32X64.dsc
+@@ -911,6 +911,7 @@
+     PciLib|MdePkg/Library/BasePciLibCf8/BasePciLibCf8.inf
+   }
+   OvmfPkg/IoMmuDxe/IoMmuDxe.inf
++  OvmfPkg/CsvDxe/CsvDxe.inf
+ 
+ !if $(SMM_REQUIRE) == TRUE
+   OvmfPkg/SmmAccess/SmmAccess2Dxe.inf
+diff --git a/OvmfPkg/OvmfPkgIa32X64.fdf b/OvmfPkg/OvmfPkgIa32X64.fdf
+index 7711d88e..96f4e832 100644
+--- a/OvmfPkg/OvmfPkgIa32X64.fdf
++++ b/OvmfPkg/OvmfPkgIa32X64.fdf
+@@ -328,6 +328,7 @@ INF  OvmfPkg/PlatformDxe/Platform.inf
+ INF  OvmfPkg/AmdSevDxe/AmdSevDxe.inf
+ INF  OvmfPkg/IoMmuDxe/IoMmuDxe.inf
+ INF  OvmfPkg/VirtHstiDxe/VirtHstiDxe.inf
++INF  OvmfPkg/CsvDxe/CsvDxe.inf
+ 
+ !if $(SMM_REQUIRE) == TRUE
+ INF  OvmfPkg/SmmAccess/SmmAccess2Dxe.inf
+diff --git a/OvmfPkg/OvmfPkgX64.dsc b/OvmfPkg/OvmfPkgX64.dsc
+index c428bdd0..c45c6176 100644
+--- a/OvmfPkg/OvmfPkgX64.dsc
++++ b/OvmfPkg/OvmfPkgX64.dsc
+@@ -978,6 +978,7 @@
+     PciLib|MdePkg/Library/BasePciLibCf8/BasePciLibCf8.inf
+   }
+   OvmfPkg/IoMmuDxe/IoMmuDxe.inf
++  OvmfPkg/CsvDxe/CsvDxe.inf
+ 
+   OvmfPkg/TdxDxe/TdxDxe.inf
+ 
+diff --git a/OvmfPkg/OvmfPkgX64.fdf b/OvmfPkg/OvmfPkgX64.fdf
+index 0409e513..b1702c42 100644
+--- a/OvmfPkg/OvmfPkgX64.fdf
++++ b/OvmfPkg/OvmfPkgX64.fdf
+@@ -364,6 +364,7 @@ INF  OvmfPkg/PlatformDxe/Platform.inf
+ INF  OvmfPkg/AmdSevDxe/AmdSevDxe.inf
+ INF  OvmfPkg/IoMmuDxe/IoMmuDxe.inf
+ INF  OvmfPkg/VirtHstiDxe/VirtHstiDxe.inf
++INF  OvmfPkg/CsvDxe/CsvDxe.inf
+ 
+ !if $(SMM_REQUIRE) == TRUE
+ INF  OvmfPkg/SmmAccess/SmmAccess2Dxe.inf
+-- 
+2.25.1
+

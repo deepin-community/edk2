@@ -1,0 +1,82 @@
+From 29683fed90b3be40bb9d862bdd258c98bdbe3a1b Mon Sep 17 00:00:00 2001
+From: Xin Jiang <jiangxin@hygon.cn>
+Date: Mon, 20 May 2024 13:53:17 +0800
+Subject: [PATCH 14/14] OvmfPkg/IoMmuDxe: Implement SetAttribute() of CsvIoMmu
+
+As PciIoMap() adds feedback with the status of SetAttribute ()
+return value, it is necessary to implement SetAttribute () for
+CsvIoMmu to fix the CSV3 boot up failure issue.
+
+Signed-off-by: Xin Jiang <jiangxin@hygon.cn>
+Signed-off-by: hanliyang <hanliyang@hygon.cn>
+---
+ OvmfPkg/IoMmuDxe/CsvIoMmu.c | 53 ++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 52 insertions(+), 1 deletion(-)
+
+diff --git a/OvmfPkg/IoMmuDxe/CsvIoMmu.c b/OvmfPkg/IoMmuDxe/CsvIoMmu.c
+index 2a46e984..755ef06c 100644
+--- a/OvmfPkg/IoMmuDxe/CsvIoMmu.c
++++ b/OvmfPkg/IoMmuDxe/CsvIoMmu.c
+@@ -539,7 +539,58 @@ CsvIoMmuSetAttribute (
+   IN UINT64                IoMmuAccess
+   )
+ {
+-  return EFI_UNSUPPORTED;
++  MAP_INFO    *MapInfo;
++  EFI_STATUS  Status;
++
++  DEBUG ((DEBUG_VERBOSE, "%a: Mapping=0x%p Access=%lu\n", __func__, Mapping, IoMmuAccess));
++
++  if (Mapping == NULL) {
++    return EFI_INVALID_PARAMETER;
++  }
++
++  Status = EFI_SUCCESS;
++
++  //
++  // An IoMmuAccess value of 0 is always accepted, validate any non-zero value.
++  //
++  if (IoMmuAccess != 0) {
++    MapInfo = (MAP_INFO *)Mapping;
++
++    //
++    // The mapping operation already implied the access mode. Validate that
++    // the supplied access mode matches operation access mode.
++    //
++    switch (MapInfo->Operation) {
++      case EdkiiIoMmuOperationBusMasterRead:
++      case EdkiiIoMmuOperationBusMasterRead64:
++        if (IoMmuAccess != EDKII_IOMMU_ACCESS_READ) {
++          Status = EFI_INVALID_PARAMETER;
++        }
++
++        break;
++
++      case EdkiiIoMmuOperationBusMasterWrite:
++      case EdkiiIoMmuOperationBusMasterWrite64:
++        if (IoMmuAccess != EDKII_IOMMU_ACCESS_WRITE) {
++          Status = EFI_INVALID_PARAMETER;
++        }
++
++        break;
++
++      case EdkiiIoMmuOperationBusMasterCommonBuffer:
++      case EdkiiIoMmuOperationBusMasterCommonBuffer64:
++        if (IoMmuAccess != (EDKII_IOMMU_ACCESS_READ | EDKII_IOMMU_ACCESS_WRITE)) {
++          Status = EFI_INVALID_PARAMETER;
++        }
++
++        break;
++
++      default:
++        Status = EFI_UNSUPPORTED;
++    }
++  }
++
++  return Status;
+ }
+ 
+ EDKII_IOMMU_PROTOCOL  mCsv = {
+-- 
+2.25.1
+
