@@ -1,0 +1,706 @@
+From 7979337bb3d9226f13f4bd2279f84ef3c981f765 Mon Sep 17 00:00:00 2001
+From: Liu Zixing <liuzixing@hygon.cn>
+Date: Fri, 25 Feb 2022 14:25:11 +0800
+Subject: [PATCH 06/14] OvmfPkg: Add CSV secure call library on Hygon CPU
+
+CSV is the secure virtualization feature on Hygon CPU.
+A CSV virtual machine is composed of private memory and shared memory.
+The private memory or shared memory can be converted to the other by
+the following steps:
+ - guest clear/set the c-bit in the guest page table
+ - guest send a update command to Hygon Secure Processor
+
+While the update command has to be forwarded by the VMM to the Secure
+Processor, to prevent  the malicious VMM from attacking the update
+command, a reliable command channel is required between the CSV VM
+and the Hygon Secure Processor.
+
+The secure call library is created to build a secure command channel
+between the VM and the Secure Processor by #NPF on a special private
+page which the VMM is not able to access.
+This special page is called secure call page.
+The VM puts command in the secure call page and triggers a #NPF
+to reach the Secure Processor.
+The Secure Processor then puts the response in the same page and
+finishes the #NPF.
+The information is protected in the secure call page all the way.
+
+CsvLib is added to implement the functionality and new PCDs are added
+accordingly.
+
+Signed-off-by: Xin Jiang <jiangxin@hygon.cn>
+---
+ OvmfPkg/AmdSev/AmdSevX64.dsc                  |   1 +
+ OvmfPkg/AmdSev/AmdSevX64.fdf                  |   5 +-
+ OvmfPkg/Include/Library/CsvLib.h              |  84 +++++++
+ OvmfPkg/Library/CsvLib/CsvLib.c               |  85 +++++++
+ OvmfPkg/Library/CsvLib/CsvLib.inf             |  54 ++++
+ .../Library/CsvLib/Ia32/UpdateMemoryCsvLib.c  |  53 ++++
+ .../Library/CsvLib/X64/UpdateMemoryCsvLib.c   | 238 ++++++++++++++++++
+ OvmfPkg/OvmfPkg.dec                           |   8 +
+ OvmfPkg/OvmfPkgIa32.dsc                       |   2 +
+ OvmfPkg/OvmfPkgIa32X64.dsc                    |   2 +
+ OvmfPkg/OvmfPkgX64.dsc                        |   1 +
+ OvmfPkg/OvmfPkgX64.fdf                        |   5 +-
+ 12 files changed, 536 insertions(+), 2 deletions(-)
+ create mode 100644 OvmfPkg/Include/Library/CsvLib.h
+ create mode 100644 OvmfPkg/Library/CsvLib/CsvLib.c
+ create mode 100644 OvmfPkg/Library/CsvLib/CsvLib.inf
+ create mode 100644 OvmfPkg/Library/CsvLib/Ia32/UpdateMemoryCsvLib.c
+ create mode 100644 OvmfPkg/Library/CsvLib/X64/UpdateMemoryCsvLib.c
+
+diff --git a/OvmfPkg/AmdSev/AmdSevX64.dsc b/OvmfPkg/AmdSev/AmdSevX64.dsc
+index 40553c00..3eb494b3 100644
+--- a/OvmfPkg/AmdSev/AmdSevX64.dsc
++++ b/OvmfPkg/AmdSev/AmdSevX64.dsc
+@@ -173,6 +173,7 @@
+   PeiHardwareInfoLib|OvmfPkg/Library/HardwareInfoLib/PeiHardwareInfoLib.inf
+   DxeHardwareInfoLib|OvmfPkg/Library/HardwareInfoLib/DxeHardwareInfoLib.inf
+   ImagePropertiesRecordLib|MdeModulePkg/Library/ImagePropertiesRecordLib/ImagePropertiesRecordLib.inf
++  CsvLib|OvmfPkg/Library/CsvLib/CsvLib.inf
+ 
+ !if $(SOURCE_DEBUG_ENABLE) == TRUE
+   PeCoffExtraActionLib|SourceLevelDebugPkg/Library/PeCoffExtraActionLibDebug/PeCoffExtraActionLibDebug.inf
+diff --git a/OvmfPkg/AmdSev/AmdSevX64.fdf b/OvmfPkg/AmdSev/AmdSevX64.fdf
+index 70e6434b..a544f80f 100644
+--- a/OvmfPkg/AmdSev/AmdSevX64.fdf
++++ b/OvmfPkg/AmdSev/AmdSevX64.fdf
+@@ -80,7 +80,10 @@ gUefiOvmfPkgTokenSpaceGuid.PcdQemuHashTableBase|gUefiOvmfPkgTokenSpaceGuid.PcdQe
+ 0x011000|0x001000
+ gUefiOvmfPkgTokenSpaceGuid.PcdOvmfSecApicPageTableBase|gUefiOvmfPkgTokenSpaceGuid.PcdOvmfSecApicPageTableSize
+ 
+-0x012000|0x00E000
++0x012000|0x002000
++gUefiOvmfPkgTokenSpaceGuid.PcdCsvDefaultSecureCallBase|gUefiOvmfPkgTokenSpaceGuid.PcdCsvDefaultSecureCallSize
++
++0x014000|0x00C000
+ gUefiOvmfPkgTokenSpaceGuid.PcdOvmfSecPeiTempRamBase|gUefiOvmfPkgTokenSpaceGuid.PcdOvmfSecPeiTempRamSize
+ 
+ 0x020000|0x0E0000
+diff --git a/OvmfPkg/Include/Library/CsvLib.h b/OvmfPkg/Include/Library/CsvLib.h
+new file mode 100644
+index 00000000..ceeab7dc
+--- /dev/null
++++ b/OvmfPkg/Include/Library/CsvLib.h
+@@ -0,0 +1,84 @@
++/** @file
++
++  CSV base library helper function
++
++  Copyright (c) 2022, HYGON. All rights reserved.<BR>
++
++  This program and the accompanying materials are licensed and made available
++  under the terms and conditions of the BSD License which accompanies this
++  distribution.  The full text of the license may be found at
++  http://opensource.org/licenses/bsd-license.php
++
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++
++**/
++
++#ifndef _CSV_LIB_H_
++#define _CSV_LIB_H_
++
++#include <Base.h>
++
++typedef struct {
++  IN UINT64         BaseAddress;
++  IN UINT64         Size;
++} CSV_SECURE_CMD_SHARED_REGION;
++
++typedef enum {
++  CsvSecureCmdEnc     = 1,
++  CsvSecureCmdDec,
++  CsvSecureCmdReset,
++  CsvSecureCmdUpdateSecureCallTable,
++  CsvSecureCmdMapLowerMemory,  //secure memory range below 4G
++  CsvSecureCmdMapUpperMemory   //secure memory range above 4G
++} CSV_SECURE_COMMAND_TYPE;
++
++/**
++  Returns a boolean to indicate whether CSV is enabled
++
++  @retval TRUE           CSV is enabled
++  @retval FALSE          CSV is not enabled
++**/
++BOOLEAN
++EFIAPI
++CsvIsEnabled (
++  VOID
++  );
++
++#define CSV_SHARED_MEMORY_SIGNATURE   SIGNATURE_32('C','S','V',' ')
++
++typedef struct {
++  UINTN           Signature;
++  LIST_ENTRY      Link;
++  UINT64          Start;
++  UINT64          Length;
++} CsvSharedMemoryEntry;
++
++VOID
++EFIAPI
++CsvUpdateMemory (
++  IN PHYSICAL_ADDRESS         BaseAddress,
++  IN UINTN                    NumPages,
++  IN BOOLEAN                  Dec
++);
++
++VOID
++EFIAPI
++CsvResetMemory (
++  VOID
++);
++
++VOID
++EFIAPI
++CsvUpdateMapLowerMemory (
++  IN PHYSICAL_ADDRESS         BaseAddress,
++  IN UINTN                    NumPages
++);
++
++VOID
++EFIAPI
++CsvUpdateMapUpperMemory (
++  IN PHYSICAL_ADDRESS         BaseAddress,
++  IN UINTN                    NumPages
++);
++#endif // _CSV_LIB_H_
+diff --git a/OvmfPkg/Library/CsvLib/CsvLib.c b/OvmfPkg/Library/CsvLib/CsvLib.c
+new file mode 100644
+index 00000000..80cd4a50
+--- /dev/null
++++ b/OvmfPkg/Library/CsvLib/CsvLib.c
+@@ -0,0 +1,85 @@
++/** @file
++
++  CSV library helper function
++
++  Copyright (c) 2022, HYGON. All rights reserved.<BR>
++
++  This program and the accompanying materials are licensed and made available
++  under the terms and conditions of the BSD License which accompanies this
++  distribution.  The full text of the license may be found at
++  http://opensource.org/licenses/bsd-license.php
++
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++
++**/
++
++#include <Library/BaseLib.h>
++#include <Uefi/UefiBaseType.h>
++#include <Library/CsvLib.h>
++#include <Library/DebugLib.h>
++#include <Library/BaseMemoryLib.h>
++#include <Register/Cpuid.h>
++#include <Register/Amd/Cpuid.h>
++#include <Register/Hygon/Cpuid.h>
++#include <Library/MemEncryptSevLib.h>
++#include <Library/CpuLib.h>
++#include <Register/Amd/SevSnpMsr.h>
++
++STATIC BOOLEAN mCsvStatus = FALSE;
++STATIC BOOLEAN mCsvStatusChecked = FALSE;
++
++/**
++
++  Reads and sets the status of CSV features
++  **/
++STATIC
++VOID
++EFIAPI
++InternalCsvStatus (
++  VOID
++  )
++{
++  UINT32                            RegEax;
++
++  //
++  // Check if memory encryption leaf exist
++  //
++  AsmCpuid (CPUID_EXTENDED_FUNCTION, &RegEax, NULL, NULL, NULL);
++  if (RegEax >= CPUID_MEMORY_ENCRYPTION_INFO) {
++    if(StandardSignatureIsHygonGenuine ()){
++      //
++      // Check MSR_0xC0010131 Bit 30 (Csv Enabled)
++      //
++      MSR_SEV_STATUS_REGISTER           Msr;
++      Msr.Uint32 = AsmReadMsr32 (MSR_SEV_STATUS);
++      if (Msr.Uint32 & (1 << 30)) {
++        mCsvStatus = TRUE;
++        DEBUG ((EFI_D_INFO, "CSV is enabled\n"));
++      }
++    }
++  }
++  mCsvStatusChecked = TRUE;
++}
++
++/**
++  Returns a boolean to indicate whether CSV is enabled
++
++  @retval TRUE           CSV is enabled
++  @retval FALSE          CSV is not enabled
++**/
++BOOLEAN
++EFIAPI
++CsvIsEnabled (
++  VOID
++  )
++{
++  if (!MemEncryptSevEsIsEnabled ())
++    return FALSE;
++
++  if (!mCsvStatusChecked) {
++    InternalCsvStatus ();
++  }
++
++  return mCsvStatus;
++}
+diff --git a/OvmfPkg/Library/CsvLib/CsvLib.inf b/OvmfPkg/Library/CsvLib/CsvLib.inf
+new file mode 100644
+index 00000000..57efbe70
+--- /dev/null
++++ b/OvmfPkg/Library/CsvLib/CsvLib.inf
+@@ -0,0 +1,54 @@
++## @file
++#  Library provides the helper functions for CSV guest
++#
++# Copyright (c) 2022 HYGON. All rights reserved.<BR>
++#
++#  This program and the accompanying materials
++#  are licensed and made available under the terms and conditions of the BSD
++#  License which accompanies this distribution. The full text of the license
++#  may be found at http://opensource.org/licenses/bsd-license.php
++#
++#  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++#  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR
++#  IMPLIED.
++#
++#
++##
++
++[Defines]
++  INF_VERSION                    = 1.25
++  BASE_NAME                      = CsvLib
++  FILE_GUID                      = 9460ef3a-b9c3-11e9-8324-7371ac35e1e3
++  MODULE_TYPE                    = BASE
++  VERSION_STRING                 = 1.0
++  LIBRARY_CLASS                  = CsvLib|PEIM DXE_CORE DXE_DRIVER DXE_RUNTIME_DRIVER DXE_SMM_DRIVER UEFI_DRIVER
++
++#
++# The following information is for reference only and not required by the build
++# tools.
++#
++# VALID_ARCHITECTURES           = Ia32 X64
++#
++
++[Packages]
++  MdePkg/MdePkg.dec
++  OvmfPkg/OvmfPkg.dec
++  UefiCpuPkg/UefiCpuPkg.dec
++
++[Sources]
++  CsvLib.c
++
++[Sources.X64]
++  X64/UpdateMemoryCsvLib.c
++[Sources.IA32]
++  Ia32/UpdateMemoryCsvLib.c
++
++[LibraryClasses]
++  BaseLib
++  CpuLib
++  DebugLib
++  MemEncryptSevLib
++
++[Pcd]
++  gUefiOvmfPkgTokenSpaceGuid.PcdCsvDefaultSecureCallBase
++  gUefiOvmfPkgTokenSpaceGuid.PcdCsvDefaultSecureCallSize
+diff --git a/OvmfPkg/Library/CsvLib/Ia32/UpdateMemoryCsvLib.c b/OvmfPkg/Library/CsvLib/Ia32/UpdateMemoryCsvLib.c
+new file mode 100644
+index 00000000..15d3aa89
+--- /dev/null
++++ b/OvmfPkg/Library/CsvLib/Ia32/UpdateMemoryCsvLib.c
+@@ -0,0 +1,53 @@
++/** @file
++
++  CSV library helper function
++
++  Copyright (c) 2022, HYGON. All rights reserved.<BR>
++
++  This program and the accompanying materials are licensed and made available
++  under the terms and conditions of the BSD License which accompanies this
++  distribution.  The full text of the license may be found at
++  http://opensource.org/licenses/bsd-license.php
++
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++
++**/
++
++#include <Library/CsvLib.h>
++
++VOID
++EFIAPI
++CsvUpdateMemory (
++  IN PHYSICAL_ADDRESS         BaseAddress,
++  IN UINTN                    NumPages,
++  IN BOOLEAN                  Dec
++)
++{
++}
++
++VOID
++EFIAPI
++CsvResetMemory (
++  VOID
++)
++{
++}
++
++VOID
++EFIAPI
++CsvUpdateMapLowerMemory (
++  IN PHYSICAL_ADDRESS         BaseAddress,
++  IN UINTN                    NumPages
++)
++{
++}
++
++VOID
++EFIAPI
++CsvUpdateMapUpperMemory (
++  IN PHYSICAL_ADDRESS         BaseAddress,
++  IN UINTN                    NumPages
++)
++{
++}
+diff --git a/OvmfPkg/Library/CsvLib/X64/UpdateMemoryCsvLib.c b/OvmfPkg/Library/CsvLib/X64/UpdateMemoryCsvLib.c
+new file mode 100644
+index 00000000..13d06d7c
+--- /dev/null
++++ b/OvmfPkg/Library/CsvLib/X64/UpdateMemoryCsvLib.c
+@@ -0,0 +1,238 @@
++/** @file
++
++  CSV library helper function
++
++  Copyright (c) 2022, HYGON. All rights reserved.<BR>
++
++  This program and the accompanying materials are licensed and made available
++  under the terms and conditions of the BSD License which accompanies this
++  distribution.  The full text of the license may be found at
++  http://opensource.org/licenses/bsd-license.php
++
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++
++**/
++
++#include <Library/BaseLib.h>
++#include <Uefi/UefiBaseType.h>
++#include <Library/CsvLib.h>
++#include <Library/DebugLib.h>
++#include <Library/BaseMemoryLib.h>
++#include <Library/IoLib.h>
++
++#define SECURE_CALL_ENTRY_MAX    (254)
++
++
++typedef struct {
++  union {
++      UINT8                Guid[16];
++      UINT64               Guid64[2];
++  };
++  UINT32                   CmdType;
++  UINT32                   Nums;
++  UINT64                   Unused;
++  struct {
++      UINT64               BaseAddress;
++      UINT64               Size;
++  } Entry[SECURE_CALL_ENTRY_MAX];
++} CSV_SECURE_CALL_CMD;
++
++STATIC UINT32 SecureCallPageIdx = 0;
++
++STATIC  UINTN MemorySizeBelow4G = (UINTN)-1;
++STATIC  UINTN MemorySizeAbove4G = (UINTN)-1;
++
++STATIC
++VOID
++EFIAPI
++CsvSecureCall(
++  IN PHYSICAL_ADDRESS         BaseAddress,
++  IN UINTN                    NumPages,
++  IN CSV_SECURE_COMMAND_TYPE  CmdType
++)
++{
++  volatile CSV_SECURE_COMMAND_TYPE CmdAck = 0;
++
++  CSV_SECURE_CALL_CMD *SecureCallPageRead;
++  CSV_SECURE_CALL_CMD *SecureCallPageWrite;
++  UINTN  SecureCallBase = 0;
++
++  if (CsvIsEnabled () == FALSE) {
++    return ;
++  }
++
++  SecureCallBase = FixedPcdGet32 (PcdCsvDefaultSecureCallBase);
++
++  SecureCallPageRead =
++    (CSV_SECURE_CALL_CMD *)(UINT64)
++    (EFI_PAGE_SIZE * SecureCallPageIdx + SecureCallBase);
++
++  SecureCallPageWrite =
++    (CSV_SECURE_CALL_CMD *)
++    (UINT64)(EFI_PAGE_SIZE * (1 - SecureCallPageIdx) + SecureCallBase);
++
++  while(1) {
++    SecureCallPageWrite->CmdType = (UINT32)CmdType;
++    SecureCallPageWrite->Nums = 1;
++    SecureCallPageWrite->Entry[0].BaseAddress = (UINT64)BaseAddress;
++    SecureCallPageWrite->Entry[0].Size = (UINT64)NumPages << EFI_PAGE_SHIFT;
++
++    MemoryFence ();
++
++    CmdAck = SecureCallPageRead->CmdType;
++    if (CmdAck != CmdType)
++      break;
++  }
++  SecureCallPageIdx = 1 - SecureCallPageIdx;
++}
++
++STATIC
++UINT8
++CmosRead8 (
++  IN      UINTN                     Index
++  )
++{
++  IoWrite8 (0x70, (UINT8) Index);
++  return IoRead8 (0x71);
++}
++
++
++STATIC
++VOID
++EFIAPI
++CsvGetSystemMemory(
++  VOID
++  )
++{
++  UINT8 Cmos0x34;
++  UINT8 Cmos0x35;
++  UINT32 Size;
++  UINTN  CmosIndex;
++
++  //
++  // system memory below 4GB MB
++  //
++
++  Cmos0x34 = (UINT8) CmosRead8 (0x34);
++  Cmos0x35 = (UINT8) CmosRead8 (0x35);
++
++  MemorySizeBelow4G =
++    (UINT32) (((UINTN)((Cmos0x35 << 8) + Cmos0x34) << 16) + SIZE_16MB);
++
++  //
++  // system memory above 4GB MB
++  //
++
++  Size = 0;
++  for (CmosIndex = 0x5d; CmosIndex >= 0x5b; CmosIndex--) {
++    Size = (UINT32) (Size << 8) + (UINT32) CmosRead8 (CmosIndex);
++  }
++
++  MemorySizeAbove4G = LShiftU64 (Size, 16);
++}
++
++STATIC
++BOOLEAN
++EFIAPI
++CsvIsDRAM(
++  IN PHYSICAL_ADDRESS         BaseAddress,
++  IN UINTN                    NumPages
++  )
++{
++  UINTN             Size = EFI_PAGES_TO_SIZE (NumPages);
++  PHYSICAL_ADDRESS  EndAddress;
++
++  Size = EFI_PAGES_TO_SIZE (NumPages);
++  EndAddress = BaseAddress + Size;
++
++  if (MemorySizeBelow4G == (UINTN)-1 ||
++      MemorySizeAbove4G == (UINTN)-1) {
++    CsvGetSystemMemory ();
++  }
++
++  if (BaseAddress < MemorySizeBelow4G) {
++    return TRUE;
++  } else if (BaseAddress >= BASE_4GB &&
++             BaseAddress < (BASE_4GB + MemorySizeAbove4G)) {
++    return TRUE;
++  } else if (EndAddress > BASE_4GB &&
++             EndAddress <= (BASE_4GB + MemorySizeAbove4G)) {
++    return TRUE;
++  } else {
++    return FALSE;
++  }
++}
++
++STATIC
++VOID
++EFIAPI
++CsvUpdateEncryptMemory (
++  IN PHYSICAL_ADDRESS         BaseAddress,
++  IN UINTN                    NumPages
++)
++{
++  PHYSICAL_ADDRESS PageAddress = BaseAddress & ~EFI_PAGE_MASK;
++
++  if (CsvIsDRAM (PageAddress, NumPages)) {
++    CsvSecureCall (PageAddress, NumPages, CsvSecureCmdEnc);
++  }
++}
++
++STATIC
++VOID
++EFIAPI
++CsvUpdateDecryptMemory (
++  IN PHYSICAL_ADDRESS         BaseAddress,
++  IN UINTN                    NumPages
++)
++{
++  PHYSICAL_ADDRESS PageAddress = BaseAddress & ~EFI_PAGE_MASK;
++
++  if (CsvIsDRAM (PageAddress, NumPages)) {
++    CsvSecureCall (PageAddress, NumPages, CsvSecureCmdDec);
++  }
++}
++
++VOID
++EFIAPI
++CsvUpdateMemory (
++  IN PHYSICAL_ADDRESS         BaseAddress,
++  IN UINTN                    NumPages,
++  IN BOOLEAN                  Dec
++  )
++{
++  if (Dec)
++    CsvUpdateDecryptMemory (BaseAddress, NumPages);
++  else
++    CsvUpdateEncryptMemory (BaseAddress, NumPages);
++}
++
++VOID
++EFIAPI
++CsvResetMemory (
++  VOID
++)
++{
++  CsvSecureCall (0, 0, CsvSecureCmdReset);
++}
++
++VOID
++EFIAPI
++CsvUpdateMapLowerMemory (
++  IN PHYSICAL_ADDRESS         BaseAddress,
++  IN UINTN                    NumPages
++)
++{
++  CsvSecureCall (BaseAddress, NumPages, CsvSecureCmdMapLowerMemory);
++}
++
++VOID
++EFIAPI
++CsvUpdateMapUpperMemory (
++  IN PHYSICAL_ADDRESS         BaseAddress,
++  IN UINTN                    NumPages
++)
++{
++  CsvSecureCall (BaseAddress, NumPages, CsvSecureCmdMapUpperMemory);
++}
+diff --git a/OvmfPkg/OvmfPkg.dec b/OvmfPkg/OvmfPkg.dec
+index c1c81980..dec85152 100644
+--- a/OvmfPkg/OvmfPkg.dec
++++ b/OvmfPkg/OvmfPkg.dec
+@@ -152,6 +152,10 @@
+   #
+   CpuMmuInitLib|Include/Library/CpuMmuInitLib.h
+ 
++  ##  @libraryclass  CSV Library
++  #
++  CsvLib|Include/Library/CsvLib.h
++
+ [Guids]
+   gUefiOvmfPkgTokenSpaceGuid            = {0x93bb96af, 0xb9f2, 0x4eb8, {0x94, 0x62, 0xe0, 0xba, 0x74, 0x56, 0x42, 0x36}}
+   gEfiXenInfoGuid                       = {0xd3b46f3b, 0xd441, 0x1244, {0x9a, 0x12, 0x0, 0x12, 0x27, 0x3f, 0xc1, 0x4d}}
+@@ -353,6 +357,10 @@
+   gUefiOvmfPkgTokenSpaceGuid.PcdOvmfSecSvsmCaaBase|0|UINT32|0x70
+   gUefiOvmfPkgTokenSpaceGuid.PcdOvmfSecSvsmCaaSize|0|UINT32|0x71
+ 
++  ## the base address of the secure call pages used by CSV.
++  gUefiOvmfPkgTokenSpaceGuid.PcdCsvDefaultSecureCallBase|0|UINT32|0x76
++  gUefiOvmfPkgTokenSpaceGuid.PcdCsvDefaultSecureCallSize|0|UINT32|0x77
++
+ [PcdsDynamic, PcdsDynamicEx]
+   gUefiOvmfPkgTokenSpaceGuid.PcdEmuVariableEvent|0|UINT64|2
+   gUefiOvmfPkgTokenSpaceGuid.PcdOvmfFlashVariablesEnable|FALSE|BOOLEAN|0x10
+diff --git a/OvmfPkg/OvmfPkgIa32.dsc b/OvmfPkg/OvmfPkgIa32.dsc
+index bd6e8abb..c8cba60a 100644
+--- a/OvmfPkg/OvmfPkgIa32.dsc
++++ b/OvmfPkg/OvmfPkgIa32.dsc
+@@ -190,6 +190,8 @@
+   DxeHardwareInfoLib|OvmfPkg/Library/HardwareInfoLib/DxeHardwareInfoLib.inf
+   ImagePropertiesRecordLib|MdeModulePkg/Library/ImagePropertiesRecordLib/ImagePropertiesRecordLib.inf
+   HstiLib|MdePkg/Library/DxeHstiLib/DxeHstiLib.inf
++  CsvLib|OvmfPkg/Library/CsvLib/CsvLib.inf
++
+ !if $(SMM_REQUIRE) == FALSE
+   LockBoxLib|OvmfPkg/Library/LockBoxLib/LockBoxBaseLib.inf
+ !endif
+diff --git a/OvmfPkg/OvmfPkgIa32X64.dsc b/OvmfPkg/OvmfPkgIa32X64.dsc
+index f28049a3..9e9a22a0 100644
+--- a/OvmfPkg/OvmfPkgIa32X64.dsc
++++ b/OvmfPkg/OvmfPkgIa32X64.dsc
+@@ -195,6 +195,8 @@
+   DxeHardwareInfoLib|OvmfPkg/Library/HardwareInfoLib/DxeHardwareInfoLib.inf
+   ImagePropertiesRecordLib|MdeModulePkg/Library/ImagePropertiesRecordLib/ImagePropertiesRecordLib.inf
+   HstiLib|MdePkg/Library/DxeHstiLib/DxeHstiLib.inf
++  CsvLib|OvmfPkg/Library/CsvLib/CsvLib.inf
++
+ !if $(SMM_REQUIRE) == FALSE
+   LockBoxLib|OvmfPkg/Library/LockBoxLib/LockBoxBaseLib.inf
+ !endif
+diff --git a/OvmfPkg/OvmfPkgX64.dsc b/OvmfPkg/OvmfPkgX64.dsc
+index efb0eedb..c428bdd0 100644
+--- a/OvmfPkg/OvmfPkgX64.dsc
++++ b/OvmfPkg/OvmfPkgX64.dsc
+@@ -207,6 +207,7 @@
+   DxeHardwareInfoLib|OvmfPkg/Library/HardwareInfoLib/DxeHardwareInfoLib.inf
+   ImagePropertiesRecordLib|MdeModulePkg/Library/ImagePropertiesRecordLib/ImagePropertiesRecordLib.inf
+   HstiLib|MdePkg/Library/DxeHstiLib/DxeHstiLib.inf
++  CsvLib|OvmfPkg/Library/CsvLib/CsvLib.inf
+ 
+ !if $(SMM_REQUIRE) == FALSE
+   LockBoxLib|OvmfPkg/Library/LockBoxLib/LockBoxBaseLib.inf
+diff --git a/OvmfPkg/OvmfPkgX64.fdf b/OvmfPkg/OvmfPkgX64.fdf
+index b6497058..0409e513 100644
+--- a/OvmfPkg/OvmfPkgX64.fdf
++++ b/OvmfPkg/OvmfPkgX64.fdf
+@@ -100,7 +100,10 @@ gUefiOvmfPkgTokenSpaceGuid.PcdOvmfSecSvsmCaaBase|gUefiOvmfPkgTokenSpaceGuid.PcdO
+ 0x010000|0x001000
+ gUefiOvmfPkgTokenSpaceGuid.PcdOvmfSecApicPageTableBase|gUefiOvmfPkgTokenSpaceGuid.PcdOvmfSecApicPageTableSize
+ 
+-0x011000|0x00F000
++0x011000|0x002000
++gUefiOvmfPkgTokenSpaceGuid.PcdCsvDefaultSecureCallBase|gUefiOvmfPkgTokenSpaceGuid.PcdCsvDefaultSecureCallSize
++
++0x013000|0x00D000
+ gUefiOvmfPkgTokenSpaceGuid.PcdOvmfSecPeiTempRamBase|gUefiOvmfPkgTokenSpaceGuid.PcdOvmfSecPeiTempRamSize
+ 
+ 0x020000|0x0E0000
+-- 
+2.25.1
+

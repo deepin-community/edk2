@@ -1,0 +1,219 @@
+From f2ea470f39234c0c1b09fe0db4781f04f7a4d3cd Mon Sep 17 00:00:00 2001
+From: Liu Zixing <liuzixing@hygon.cn>
+Date: Fri, 25 Feb 2022 15:55:44 +0800
+Subject: [PATCH 07/14] OvmfPkg/ResetVector: Support CSV in ResetVector phase
+
+- A GUID is written along with the first secure call page address,
+by which the Secure Processor can locate the first secure call page
+address.
+
+- Check whether the VM is a CSV VM when setting the first page table
+
+- CSV VM will update first shared GHCB page address to Secure Processor
+by secure call page
+
+Signed-off-by: Xin Jiang <jiangxin@hygon.cn>
+---
+ OvmfPkg/ResetVector/Ia16/ResetVectorVtf0.asm |  15 +++
+ OvmfPkg/ResetVector/Ia32/AmdSev.asm          |   9 ++
+ OvmfPkg/ResetVector/Ia32/CsvInit.asm         | 107 +++++++++++++++++++
+ OvmfPkg/ResetVector/ResetVector.inf          |   2 +
+ OvmfPkg/ResetVector/ResetVector.nasmb        |   4 +
+ 5 files changed, 137 insertions(+)
+ create mode 100644 OvmfPkg/ResetVector/Ia32/CsvInit.asm
+
+diff --git a/OvmfPkg/ResetVector/Ia16/ResetVectorVtf0.asm b/OvmfPkg/ResetVector/Ia16/ResetVectorVtf0.asm
+index 8f94da89..49a84a5e 100644
+--- a/OvmfPkg/ResetVector/Ia16/ResetVectorVtf0.asm
++++ b/OvmfPkg/ResetVector/Ia16/ResetVectorVtf0.asm
+@@ -48,6 +48,21 @@ TIMES (15 - ((guidedStructureEnd - guidedStructureStart + 15) % 16)) DB 0
+ guidedStructureStart:
+ 
+ %ifdef ARCH_X64
++;
++; CSV secure call table
++;
++; Provide secure call pages when boot up for CSV guest.
++;
++; GUID : 9a5d926f-2fa5-ceba-ab21-6b275d5556a5
++;
++csvSecureCallBase:
++    DD      CSV_DEFAULT_SECURE_CALL_SIZE
++    DD      CSV_DEFAULT_SECURE_CALL_BASE
++    DW      csvSecureCallEnd - csvSecureCallBase
++    DB      0x6F, 0x92, 0x5D, 0x9A, 0xA5, 0x2F, 0xBA, 0xCE
++    DB      0xAB, 0x21, 0x6B, 0x27, 0x5D, 0x55, 0x56, 0xA5
++csvSecureCallEnd:
++
+ ;
+ ; TDX Metadata offset block
+ ;
+diff --git a/OvmfPkg/ResetVector/Ia32/AmdSev.asm b/OvmfPkg/ResetVector/Ia32/AmdSev.asm
+index 827c8743..7f942178 100644
+--- a/OvmfPkg/ResetVector/Ia32/AmdSev.asm
++++ b/OvmfPkg/ResetVector/Ia32/AmdSev.asm
+@@ -191,6 +191,15 @@ pageTableEntries4kLoop:
+     mov     ecx, (GHCB_BASE & 0x1F_FFFF) >> 12
+     mov     [ecx * 8 + GHCB_PT_ADDR + 4], strict dword 0
+ 
++    OneTimeCall   CheckCsvFeature
++    test    eax, eax
++    jz      SevClearPageEncMaskForGhcbPageExit
++
++    OneTimeCall   CsvInit
++    mov     eax,  1
++    test    ecx,  ecx
++    jz      SevEsUnexpectedRespTerminate
++
+ SevClearPageEncMaskForGhcbPageExit:
+     OneTimeCallRet SevClearPageEncMaskForGhcbPage
+ 
+diff --git a/OvmfPkg/ResetVector/Ia32/CsvInit.asm b/OvmfPkg/ResetVector/Ia32/CsvInit.asm
+new file mode 100644
+index 00000000..0744a35e
+--- /dev/null
++++ b/OvmfPkg/ResetVector/Ia32/CsvInit.asm
+@@ -0,0 +1,107 @@
++;------------------------------------------------------------------------------
++; @file
++; Provide the functions to check whether CSV is enabled.
++;
++; Copyright (c) 2022, HYGON. All rights reserved.<BR>
++; SPDX-License-Identifier: BSD-2-Clause-Patent
++;
++;------------------------------------------------------------------------------
++
++BITS    32
++
++; If Secure Command returns ok then ECX will be non-zero.
++; If Secure Command returns error then ECX will be zero.
++CsvInit:
++    mov       esp, SEV_ES_VC_TOP_OF_STACK
++    push      esi
++    push      edi
++
++    ; copy SECURE_CALL_GUID to CSV_DEFAULT_SECURE_CALL_BASE + 4096
++    cld
++    mov       esi, ADDR_OF(SECURE_CALL_GUID)
++    mov       edi, CSV_DEFAULT_SECURE_CALL_BASE
++    add       edi, 4096
++    mov       ecx, 4
++    rep       movsd
++
++    ; secure call begin
++    mov       esi, CSV_DEFAULT_SECURE_CALL_BASE
++    ; write secure cmd to page B
++    ; 16 bytes of page A/B is GUID, just ignore
++    mov       [esi + 4096 + 16], DWORD 2        ; dec command
++    mov       [esi + 4096 + 20], DWORD 1        ; 1 entry
++    ; 8 bytes is unused
++    mov       [esi + 4096 + 32], DWORD GHCB_BASE; lower address
++    mov       [esi + 4096 + 36], DWORD 0        ; upper address
++    mov       [esi + 4096 + 40], DWORD 4096     ; lower 32 bit of page size
++    mov       [esi + 4096 + 44], DWORD 0        ; upper 32 bit of page size
++    mfence
++    ; read from page A
++    mov       ecx, [esi + 16]
++    ; check if the response comes
++    cmp       ecx, 2
++    jne       SecureCommandDone
++    ; no secure command response, clean ecx
++    xor       ecx, ecx
++    ; secure call end
++
++SecureCommandDone:
++    pop       edi
++    pop       esi
++    mov       esp, 0
++
++    OneTimeCallRet CsvInit
++
++; Check if CSV feature is enabled.
++;
++; Modified:  EAX, EBX, ECX, EDX
++;
++; If CSV is enabled then EAX will be non-zero.
++; If CSV is disabled then EAX will be zero.
++;
++CheckCsvFeature:
++    mov       esp, SEV_ES_VC_TOP_OF_STACK
++    mov       eax, ADDR_OF(Idtr)
++    lidt      [cs:eax]
++
++    ; Check if vendor Hygon CPUID_SIGNATURE(0x0)
++    ;   CPUID raises a #VC exception if running as an SEV-ES guest
++    mov       eax, 0
++    cpuid
++
++    cmp       ebx, 0x6f677948
++    jne       NoCsv
++    cmp       ecx, 0x656e6975
++    jne       NoCsv
++    cmp       edx, 0x6e65476e
++    jne       NoCsv
++
++    ; Check if CSV is enabled
++    ;  MSR_0xC0010131 - Bit 30 (CSV enabled)
++    mov       ecx, 0xc0010131
++    rdmsr
++    and       eax, 0x40000000
++    jmp       CsvExit
++
++NoCsv:
++    xor       eax, eax
++
++CsvExit:
++    ;
++    ; Clear exception handlers and stack
++    ;
++    push      eax
++    mov       eax, ADDR_OF(IdtrClear)
++    lidt      [cs:eax]
++    pop       eax
++    mov       esp, 0
++
++    OneTimeCallRet CheckCsvFeature
++
++SECURE_CALL_GUID:
++;    low      0xceba2fa59a5d926f
++;    high     0xa556555d276b21ab
++     dd       0x9a5d926f
++     dd       0xceba2fa5
++     dd       0x276b21ab
++     dd       0xa556555d
+diff --git a/OvmfPkg/ResetVector/ResetVector.inf b/OvmfPkg/ResetVector/ResetVector.inf
+index 7bd517e6..cdb5f277 100644
+--- a/OvmfPkg/ResetVector/ResetVector.inf
++++ b/OvmfPkg/ResetVector/ResetVector.inf
+@@ -35,6 +35,8 @@
+ 
+ [Pcd]
+   gUefiCpuPkgTokenSpaceGuid.PcdSevEsWorkAreaBase
++  gUefiOvmfPkgTokenSpaceGuid.PcdCsvDefaultSecureCallBase
++  gUefiOvmfPkgTokenSpaceGuid.PcdCsvDefaultSecureCallSize
+   gUefiOvmfPkgTokenSpaceGuid.PcdOvmfSecGhcbBase
+   gUefiOvmfPkgTokenSpaceGuid.PcdOvmfSecGhcbSize
+   gUefiOvmfPkgTokenSpaceGuid.PcdOvmfSecGhcbPageTableBase
+diff --git a/OvmfPkg/ResetVector/ResetVector.nasmb b/OvmfPkg/ResetVector/ResetVector.nasmb
+index 7279ac64..acaae4f6 100644
+--- a/OvmfPkg/ResetVector/ResetVector.nasmb
++++ b/OvmfPkg/ResetVector/ResetVector.nasmb
+@@ -139,11 +139,15 @@
+   %define TDX_WORK_AREA_PGTBL_READY (FixedPcdGet32 (PcdOvmfWorkAreaBase) + 4)
+   %define TDX_WORK_AREA_GPAW        (FixedPcdGet32 (PcdOvmfWorkAreaBase) + 8)
+ 
++  %define CSV_DEFAULT_SECURE_CALL_BASE FixedPcdGet32 (PcdCsvDefaultSecureCallBase)
++  %define CSV_DEFAULT_SECURE_CALL_SIZE FixedPcdGet32 (PcdCsvDefaultSecureCallSize)
++
+   %include "X64/IntelTdxMetadata.asm"
+   %include "Ia32/Flat32ToFlat64.asm"
+   %include "Ia32/PageTables64.asm"
+   %include "Ia32/IntelTdx.asm"
+   %include "X64/OvmfSevMetadata.asm"
++  %include "Ia32/CsvInit.asm"
+ %endif
+ 
+ %include "Ia32/AmdSev.asm"
+-- 
+2.25.1
+

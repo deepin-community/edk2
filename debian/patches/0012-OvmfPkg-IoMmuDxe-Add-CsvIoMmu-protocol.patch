@@ -1,0 +1,725 @@
+From 01b47de737a6b9cf4fbc80d2721b577c70721f76 Mon Sep 17 00:00:00 2001
+From: Liu Zixing <liuzixing@hygon.cn>
+Date: Fri, 25 Feb 2022 16:54:44 +0800
+Subject: [PATCH 12/14] OvmfPkg/IoMmuDxe: Add CsvIoMmu protocol
+
+Create the dedicated IoMmu protocol for CSV virtual machine.
+And Install it during CSV VM boots up.
+
+It calls the CsvSharedMemoryProtocol to allocate shared memory
+for DMA operations.
+
+- AllocateBuffer() allocates the shared memory.
+
+- FreeBuffer() frees the shared memory.
+
+- Map() does nothing when BusMasterCommonBuffer[64] is requested
+  Otherwise, Map() allocates shared memory.
+
+- Unmap() does nothing when cleaning up a BusMasterCommonBuffer[64]
+  operation. Otherwise, Unmap() frees the shared memory.
+
+Signed-off-by: Xin Jiang <jiangxin@hygon.cn>
+---
+ OvmfPkg/IoMmuDxe/CsvIoMmu.c   | 592 ++++++++++++++++++++++++++++++++++
+ OvmfPkg/IoMmuDxe/CsvIoMmu.h   |  29 ++
+ OvmfPkg/IoMmuDxe/IoMmuDxe.c   |  10 +
+ OvmfPkg/IoMmuDxe/IoMmuDxe.inf |   6 +-
+ 4 files changed, 636 insertions(+), 1 deletion(-)
+ create mode 100644 OvmfPkg/IoMmuDxe/CsvIoMmu.c
+ create mode 100644 OvmfPkg/IoMmuDxe/CsvIoMmu.h
+
+diff --git a/OvmfPkg/IoMmuDxe/CsvIoMmu.c b/OvmfPkg/IoMmuDxe/CsvIoMmu.c
+new file mode 100644
+index 00000000..2a46e984
+--- /dev/null
++++ b/OvmfPkg/IoMmuDxe/CsvIoMmu.c
+@@ -0,0 +1,592 @@
++/** @file
++
++  The protocol provides support to allocate, free, map and umap a DMA buffer
++  for bus master (e.g PciHostBridge). When CSV is enabled, the DMA operations
++  must be performed on non-secure memory so we have to allocate the DMA buffer
++  from non-secure memory.
++
++  Copyright (c) 2022, HYGON. All rights reserved.<BR>
++
++  This program and the accompanying materials are licensed and made available
++  under the terms and conditions of the BSD License which accompanies this
++  distribution.  The full text of the license may be found at
++  http://opensource.org/licenses/bsd-license.php
++
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++
++**/
++
++#include <Protocol/IoMmu.h>
++
++#include <Library/BaseLib.h>
++#include <Library/DebugLib.h>
++#include <Library/BaseMemoryLib.h>
++#include <Library/MemoryAllocationLib.h>
++#include <Library/CsvLib.h>
++#include <Protocol/CsvSharedMemory.h>
++#include <Library/UefiBootServicesTableLib.h>
++#include "CsvIoMmu.h"
++
++#define MAP_INFO_SIG SIGNATURE_64 ('M', 'A', 'P', '_', 'I', 'N', 'F', 'O')
++
++typedef struct {
++  UINT64                                    Signature;
++  LIST_ENTRY                                Link;
++  EDKII_IOMMU_OPERATION                     Operation;
++  UINTN                                     NumberOfBytes;
++  UINTN                                     NumberOfPages;
++  EFI_PHYSICAL_ADDRESS                      SecureAddress;
++  EFI_PHYSICAL_ADDRESS                      UnSecureAddress;
++} MAP_INFO;
++
++//
++// List of the MAP_INFO structures that have been set up by IoMmuMap() and not
++// yet torn down by IoMmuUnmap(). The list represents the full set of mappings
++// currently in effect.
++//
++STATIC LIST_ENTRY mMapInfos = INITIALIZE_LIST_HEAD_VARIABLE (mMapInfos);
++
++//
++// ASCII names for EDKII_IOMMU_OPERATION constants, for debug logging.
++//
++STATIC CONST CHAR8 * CONST
++mBusMasterOperationName[EdkiiIoMmuOperationMaximum] = {
++  "Read",
++  "Write",
++  "CommonBuffer",
++  "Read64",
++  "Write64",
++  "CommonBuffer64"
++};
++
++STATIC CSV_SHARED_MEMORY_PROTOCOL      *SharedMemory;
++STATIC
++EFI_STATUS
++EFIAPI
++CsvAllocSharedPage(
++  IN  UINTN                    Pages,
++  OUT EFI_PHYSICAL_ADDRESS     *Address
++  )
++{
++  EFI_STATUS    Status;
++
++  Status = SharedMemory->CsvAllocateSharedMemory (
++             SharedMemory,
++             Pages,
++             (UINT64*)Address
++             );
++
++  return Status;
++}
++
++STATIC
++EFI_STATUS
++EFIAPI
++CsvFreeSharedPage(
++  IN  UINTN                                    Pages,
++  IN  VOID                                     *HostAddress
++  )
++{
++  EFI_STATUS    Status;
++
++  Status = SharedMemory->CsvFreeSharedMemory (
++             SharedMemory,
++             Pages,
++             (UINTN)HostAddress
++             );
++
++  return Status;
++}
++
++/**
++  Provides the controller-specific addresses required to access system memory
++  from a DMA bus master.
++  On CSV guest, the DMA openerations must be done on non-secure memory which
++  is the shared memory between the guest and QEMU.
++
++  @param  This                  The protocol instance pointer.
++  @param  Operation             Indicates if the bus master is going to read or
++                                write to system memory.
++  @param  HostAddress           The system memory address to map to the PCI
++                                controller.
++  @param  NumberOfBytes         On input the number of bytes to map. On output
++                                the number of bytes that were mapped.
++  @param  DeviceAddress         The resulting map address for the bus master
++                                PCI controller to use to access the hosts
++                                HostAddress.
++  @param  Mapping               A resulting value to pass to Unmap().
++
++  @retval EFI_SUCCESS           The range was mapped for the returned
++                                NumberOfBytes.
++  @retval EFI_UNSUPPORTED       The HostAddress cannot be mapped as a common
++                                buffer.
++  @retval EFI_INVALID_PARAMETER One or more parameters are invalid.
++  @retval EFI_OUT_OF_RESOURCES  The request could not be completed due to a
++                                lack of resources.
++  @retval EFI_DEVICE_ERROR      The system hardware could not map the requested
++                                address.
++
++**/
++EFI_STATUS
++EFIAPI
++CsvIoMmuMap (
++  IN     EDKII_IOMMU_PROTOCOL                       *This,
++  IN     EDKII_IOMMU_OPERATION                      Operation,
++  IN     VOID                                       *HostAddress,
++  IN OUT UINTN                                      *NumberOfBytes,
++  OUT    EFI_PHYSICAL_ADDRESS                       *DeviceAddress,
++  OUT    VOID                                       **Mapping
++  )
++{
++  EFI_STATUS                                        Status;
++  MAP_INFO                                          *MapInfo;
++
++  DEBUG ((
++    DEBUG_VERBOSE,
++    "%a: Operation=%a Operation=%u Host=0x%p Bytes=0x%Lx\n",
++    __FUNCTION__,
++    ((Operation >= 0 &&
++      Operation < ARRAY_SIZE (mBusMasterOperationName)) ?
++     mBusMasterOperationName[Operation] :
++     "Invalid"),
++    Operation,
++    HostAddress,
++    (UINT64)((NumberOfBytes == NULL) ? 0 : *NumberOfBytes)
++    ));
++
++  if (HostAddress == NULL || NumberOfBytes == NULL || DeviceAddress == NULL ||
++      Mapping == NULL) {
++    return EFI_INVALID_PARAMETER;
++  }
++
++  //
++  // Allocate a MAP_INFO structure to remember the mapping when Unmap() is
++  // called later.
++  //
++  MapInfo = AllocatePool (sizeof (MAP_INFO));
++  if (MapInfo == NULL) {
++    Status = EFI_OUT_OF_RESOURCES;
++    goto Failed;
++  }
++
++  ZeroMem (&MapInfo->Link, sizeof MapInfo->Link);
++  MapInfo->Operation         = Operation;
++  MapInfo->NumberOfBytes     = *NumberOfBytes;
++  MapInfo->NumberOfPages     = EFI_SIZE_TO_PAGES (MapInfo->NumberOfBytes);
++  MapInfo->Signature         = MAP_INFO_SIG;
++
++  switch (Operation) {
++  //
++  // For BusMasterRead[64] and BusMasterWrite[64] operations, a bounce buffer
++  // is necessary regardless of whether the original (crypted) buffer crosses
++  // the 4GB limit or not -- we have to allocate a separate plaintext buffer.
++  // The only variable is whether the plaintext buffer should be under 4GB.
++  //
++  case EdkiiIoMmuOperationBusMasterRead:
++  case EdkiiIoMmuOperationBusMasterWrite:
++    //
++    // fall through
++    //
++  case EdkiiIoMmuOperationBusMasterRead64:
++  case EdkiiIoMmuOperationBusMasterWrite64:
++    //
++    // Allocate the implicit plaintext bounce buffer.
++    //
++    Status = CsvAllocSharedPage (
++               MapInfo->NumberOfPages,
++               &MapInfo->UnSecureAddress
++               );
++    if (EFI_ERROR (Status)) {
++      goto FreeMapInfo;
++    }
++    MapInfo->SecureAddress = (UINTN)HostAddress;
++    if (Operation == EdkiiIoMmuOperationBusMasterRead ||
++        Operation == EdkiiIoMmuOperationBusMasterRead64) {
++      CopyMem (
++        (VOID *) (UINTN) MapInfo->UnSecureAddress,
++        (VOID *) (UINTN) MapInfo->SecureAddress,
++        MapInfo->NumberOfBytes
++        );
++    }
++    break;
++
++  //
++  // For BusMasterCommonBuffer[64] operations,
++  // AllocateBuffer already returns the plain-text,
++  // No need to decrypt the data.
++  //
++  case EdkiiIoMmuOperationBusMasterCommonBuffer:
++  case EdkiiIoMmuOperationBusMasterCommonBuffer64:
++    MapInfo->UnSecureAddress = (UINTN)HostAddress;
++    MapInfo->SecureAddress   = (UINTN)HostAddress;
++    break;
++
++  default:
++    //
++    // Operation is invalid
++    //
++    Status = EFI_INVALID_PARAMETER;
++    goto FreeMapInfo;
++  }
++
++  //
++  // Track all MAP_INFO structures.
++  //
++  InsertHeadList (&mMapInfos, &MapInfo->Link);
++  //
++  // Populate output parameters.
++  //
++  *DeviceAddress = MapInfo->UnSecureAddress;
++  *Mapping       = MapInfo;
++
++  DEBUG ((
++    DEBUG_VERBOSE,
++    "%a: Mapping=0x%p Device=0x%Lx Host=0x%Lx Pages=0x%Lx\n",
++    __FUNCTION__,
++    MapInfo,
++    MapInfo->UnSecureAddress,
++    MapInfo->SecureAddress,
++    (UINT64)MapInfo->NumberOfPages
++    ));
++
++  return EFI_SUCCESS;
++
++FreeMapInfo:
++  FreePool (MapInfo);
++
++Failed:
++  *NumberOfBytes = 0;
++  return Status;
++}
++
++/**
++  Completes the Map() operation and releases any corresponding resources.
++
++  This is an internal worker function that only extends the Map() API with
++  the MemoryMapLocked parameter.
++
++  @param  This                  The protocol instance pointer.
++  @param  Mapping               The mapping value returned from Map().
++  @param  MemoryMapLocked       The function is executing on the stack of
++                                gBS->ExitBootServices(); changes to the UEFI
++                                memory map are forbidden.
++
++  @retval EFI_SUCCESS           The range was unmapped.
++  @retval EFI_INVALID_PARAMETER Mapping is not a value that was returned by
++                                Map().
++  @retval EFI_DEVICE_ERROR      The data was not committed to the target system
++                                memory.
++**/
++STATIC
++EFI_STATUS
++EFIAPI
++CsvIoMmuUnmapWorker (
++  IN  EDKII_IOMMU_PROTOCOL                     *This,
++  IN  VOID                                     *Mapping,
++  IN  BOOLEAN                                  MemoryMapLocked
++  )
++{
++  MAP_INFO                 *MapInfo;
++  EDKII_IOMMU_OPERATION    Operation;
++
++  if (Mapping == NULL) {
++    return EFI_INVALID_PARAMETER;
++  }
++
++  MapInfo = (MAP_INFO *)Mapping;
++  Operation = MapInfo->Operation;
++
++  DEBUG ((
++    DEBUG_VERBOSE,
++    "%a: Mapping=0x%p MemoryMapLocked=%d Operation %a Operation %d\n",
++    __FUNCTION__,
++    Mapping,
++    MemoryMapLocked,
++    ((Operation >= 0 &&
++      Operation < ARRAY_SIZE (mBusMasterOperationName)) ?
++     mBusMasterOperationName[Operation] :
++     "Invalid"),
++     Operation
++    ));
++
++  switch (MapInfo->Operation) {
++  case EdkiiIoMmuOperationBusMasterWrite:
++  case EdkiiIoMmuOperationBusMasterWrite64:
++    CopyMem (
++      (VOID *) (UINTN) MapInfo->SecureAddress,
++      (VOID *) (UINTN) MapInfo->UnSecureAddress,
++      MapInfo->NumberOfBytes
++      );
++  case EdkiiIoMmuOperationBusMasterRead:
++  case EdkiiIoMmuOperationBusMasterRead64:
++    ZeroMem (
++      (VOID *)(UINTN)MapInfo->UnSecureAddress,
++      EFI_PAGES_TO_SIZE (MapInfo->NumberOfPages)
++      );
++    CsvFreeSharedPage(
++      MapInfo->NumberOfPages,
++      (VOID*)(UINTN)MapInfo->UnSecureAddress
++      );
++
++  default:
++    break;
++  }
++
++  //
++  // Forget the MAP_INFO structure, then free it (unless the UEFI memory map is
++  // locked).
++  //
++  RemoveEntryList (&MapInfo->Link);
++  if (!MemoryMapLocked) {
++    FreePool (MapInfo);
++  }
++
++  return EFI_SUCCESS;
++
++}
++
++/**
++  Completes the Map() operation and releases any corresponding resources.
++
++  @param  This                  The protocol instance pointer.
++  @param  Mapping               The mapping value returned from Map().
++
++  @retval EFI_SUCCESS           The range was unmapped.
++  @retval EFI_INVALID_PARAMETER Mapping is not a value that was returned by
++                                Map().
++  @retval EFI_DEVICE_ERROR      The data was not committed to the target system
++                                memory.
++**/
++EFI_STATUS
++EFIAPI
++CsvIoMmuUnmap (
++  IN  EDKII_IOMMU_PROTOCOL                     *This,
++  IN  VOID                                     *Mapping
++  )
++{
++  return CsvIoMmuUnmapWorker (
++           This,
++           Mapping,
++           FALSE    // MemoryMapLocked
++           );
++}
++
++/**
++  Allocates pages that are suitable for an OperationBusMasterCommonBuffer or
++  OperationBusMasterCommonBuffer64 mapping.
++
++  @param  This                  The protocol instance pointer.
++  @param  Type                  This parameter is not used and must be ignored.
++  @param  MemoryType            The type of memory to allocate,
++                                EfiBootServicesData or EfiRuntimeServicesData.
++  @param  Pages                 The number of pages to allocate.
++  @param  HostAddress           A pointer to store the base system memory
++                                address of the allocated range.
++  @param  Attributes            The requested bit mask of attributes for the
++                                allocated range.
++
++  @retval EFI_SUCCESS           The requested memory pages were allocated.
++  @retval EFI_UNSUPPORTED       Attributes is unsupported. The only legal
++                                attribute bits are MEMORY_WRITE_COMBINE and
++                                MEMORY_CACHED.
++  @retval EFI_INVALID_PARAMETER One or more parameters are invalid.
++  @retval EFI_OUT_OF_RESOURCES  The memory pages could not be allocated.
++
++**/
++EFI_STATUS
++EFIAPI
++CsvIoMmuAllocateBuffer (
++  IN     EDKII_IOMMU_PROTOCOL                     *This,
++  IN     EFI_ALLOCATE_TYPE                        Type,
++  IN     EFI_MEMORY_TYPE                          MemoryType,
++  IN     UINTN                                    Pages,
++  IN OUT VOID                                     **HostAddress,
++  IN     UINT64                                   Attributes
++  )
++{
++  EFI_STATUS                Status;
++  EFI_PHYSICAL_ADDRESS      PhysicalAddress;
++
++  DEBUG ((
++    DEBUG_VERBOSE,
++    "%a: MemoryType=%u Pages=0x%Lx Attributes=0x%Lx\n",
++    __FUNCTION__,
++    (UINT32)MemoryType,
++    (UINT64)Pages,
++    Attributes
++    ));
++
++  //
++  // Validate Attributes
++  //
++  if ((Attributes & EDKII_IOMMU_ATTRIBUTE_INVALID_FOR_ALLOCATE_BUFFER) != 0) {
++    return EFI_UNSUPPORTED;
++  }
++
++  //
++  // Check for invalid inputs
++  //
++  if (HostAddress == NULL) {
++    return EFI_INVALID_PARAMETER;
++  }
++
++  //
++  // The only valid memory types are EfiBootServicesData and
++  // EfiRuntimeServicesData
++  //
++  if (MemoryType != EfiBootServicesData &&
++      MemoryType != EfiRuntimeServicesData) {
++    return EFI_INVALID_PARAMETER;
++  }
++
++  //
++  // We'll need a header page for the COMMON_BUFFER_HEADER structure.
++  //
++  if (Pages > MAX_UINTN - 1) {
++    return EFI_OUT_OF_RESOURCES;
++  }
++
++  Status = CsvAllocSharedPage (Pages,&PhysicalAddress);
++  if (Status != EFI_SUCCESS){
++    goto error;
++  }
++
++
++  *HostAddress = (VOID *)(UINTN)PhysicalAddress;
++
++  return EFI_SUCCESS;
++
++error:
++  return Status;
++}
++
++/**
++  Frees memory that was allocated with AllocateBuffer().
++
++  @param  This                  The protocol instance pointer.
++  @param  Pages                 The number of pages to free.
++  @param  HostAddress           The base system memory address of the allocated
++                                range.
++
++  @retval EFI_SUCCESS           The requested memory pages were freed.
++  @retval EFI_INVALID_PARAMETER The memory range specified by HostAddress and
++                                Pages was not allocated with AllocateBuffer().
++
++**/
++EFI_STATUS
++EFIAPI
++CsvIoMmuFreeBuffer (
++  IN  EDKII_IOMMU_PROTOCOL                     *This,
++  IN  UINTN                                    Pages,
++  IN  VOID                                     *HostAddress
++  )
++{
++
++  EFI_STATUS                Status;
++
++  if (HostAddress == NULL || Pages == 0) {
++      return EFI_INVALID_PARAMETER;
++  }
++
++  DEBUG ((
++    DEBUG_VERBOSE,
++    "%a: Host=0x%p Pages=0x%Lx\n",
++    __FUNCTION__,
++    HostAddress,
++    (UINT64)Pages
++    ));
++
++  Status = CsvFreeSharedPage (Pages, HostAddress);
++
++  return Status;
++}
++
++
++/**
++  Set IOMMU attribute for a system memory.
++
++  @param[in]  This              The protocol instance pointer.
++  @param[in]  DeviceHandle      The device who initiates the DMA access
++                                request.
++  @param[in]  Mapping           The mapping value returned from Map().
++  @param[in]  IoMmuAccess       The IOMMU access.
++
++  @retval EFI_SUCCESS            The IoMmuAccess is set for the memory range
++                                 specified by DeviceAddress and Length.
++  @retval EFI_INVALID_PARAMETER  DeviceHandle is an invalid handle.
++  @retval EFI_INVALID_PARAMETER  Mapping is not a value that was returned by
++                                 Map().
++  @retval EFI_INVALID_PARAMETER  IoMmuAccess specified an illegal combination
++                                 of access.
++  @retval EFI_UNSUPPORTED        DeviceHandle is unknown by the IOMMU.
++  @retval EFI_UNSUPPORTED        The bit mask of IoMmuAccess is not supported
++                                 by the IOMMU.
++  @retval EFI_UNSUPPORTED        The IOMMU does not support the memory range
++                                 specified by Mapping.
++  @retval EFI_OUT_OF_RESOURCES   There are not enough resources available to
++                                 modify the IOMMU access.
++  @retval EFI_DEVICE_ERROR       The IOMMU device reported an error while
++                                 attempting the operation.
++
++**/
++EFI_STATUS
++EFIAPI
++CsvIoMmuSetAttribute (
++  IN EDKII_IOMMU_PROTOCOL  *This,
++  IN EFI_HANDLE            DeviceHandle,
++  IN VOID                  *Mapping,
++  IN UINT64                IoMmuAccess
++  )
++{
++  return EFI_UNSUPPORTED;
++}
++
++EDKII_IOMMU_PROTOCOL  mCsv = {
++  EDKII_IOMMU_PROTOCOL_REVISION,
++  CsvIoMmuSetAttribute,
++  CsvIoMmuMap,
++  CsvIoMmuUnmap,
++  CsvIoMmuAllocateBuffer,
++  CsvIoMmuFreeBuffer,
++};
++
++/**
++  Initialize Iommu Protocol.
++
++**/
++EFI_STATUS
++EFIAPI
++CsvInstallIoMmuProtocol (
++  VOID
++  )
++{
++  EFI_STATUS  Status;
++  EFI_HANDLE  Handle;
++
++  Status = gBS->LocateProtocol (
++                  &gCsvSharedMemoryProtocolGuid,
++                  NULL,
++                  (VOID**)&SharedMemory
++                  );
++
++  if (EFI_ERROR (Status)) {
++    goto error;
++  }
++
++  Handle = NULL;
++  Status = gBS->InstallMultipleProtocolInterfaces (
++                  &Handle,
++                  &gEdkiiIoMmuProtocolGuid,
++                  &mCsv,
++                  NULL
++                  );
++  if (EFI_ERROR (Status)) {
++    goto error;
++  }
++
++  return EFI_SUCCESS;
++
++error:
++  return Status;
++}
+diff --git a/OvmfPkg/IoMmuDxe/CsvIoMmu.h b/OvmfPkg/IoMmuDxe/CsvIoMmu.h
+new file mode 100644
+index 00000000..431d2843
+--- /dev/null
++++ b/OvmfPkg/IoMmuDxe/CsvIoMmu.h
+@@ -0,0 +1,29 @@
++/** @file
++
++  The protocol provides support to allocate, free, map and umap a DMA buffer
++  for bus master (e.g PciHostBridge). When CSV is enabled, the DMA operations
++  must be performed on unencrypted buffer hence protocol clear the encryption
++  bit from the DMA buffer.
++
++  Copyright (c) 2022, HYGON. All rights reserved.<BR>
++
++  This program and the accompanying materials are licensed and made available
++  under the terms and conditions of the BSD License which accompanies this
++  distribution.  The full text of the license may be found at
++  http://opensource.org/licenses/bsd-license.php
++
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++
++**/
++
++#ifndef _CSV_IOMMU_H_
++#define _CSV_IOMMU_H_
++
++EFI_STATUS
++EFIAPI
++CsvInstallIoMmuProtocol (
++  VOID
++  );
++
++#endif
+diff --git a/OvmfPkg/IoMmuDxe/IoMmuDxe.c b/OvmfPkg/IoMmuDxe/IoMmuDxe.c
+index aab6d8b9..cd03ca90 100644
+--- a/OvmfPkg/IoMmuDxe/IoMmuDxe.c
++++ b/OvmfPkg/IoMmuDxe/IoMmuDxe.c
+@@ -10,6 +10,8 @@
+ **/
+ 
+ #include "CcIoMmu.h"
++#include <Library/CsvLib.h>
++#include "CsvIoMmu.h"
+ 
+ EFI_STATUS
+ EFIAPI
+@@ -21,6 +23,14 @@ IoMmuDxeEntryPoint (
+   EFI_STATUS  Status;
+   EFI_HANDLE  Handle;
+ 
++  if (CsvIsEnabled ()) {
++    Status = CsvInstallIoMmuProtocol ();
++    if (Status != EFI_SUCCESS) {
++      DEBUG((EFI_D_ERROR, "fail to install CSV IOMMU\n"));
++    }
++    return Status;
++  }
++
+   //
+   // When SEV or TDX is enabled, install IoMmu protocol otherwise install the
+   // placeholder protocol so that other dependent module can run.
+diff --git a/OvmfPkg/IoMmuDxe/IoMmuDxe.inf b/OvmfPkg/IoMmuDxe/IoMmuDxe.inf
+index d08f7e59..d16e940b 100644
+--- a/OvmfPkg/IoMmuDxe/IoMmuDxe.inf
++++ b/OvmfPkg/IoMmuDxe/IoMmuDxe.inf
+@@ -22,6 +22,8 @@
+   CcIoMmu.h
+   IoMmuDxe.c
+   IoMmuBuffer.c
++  CsvIoMmu.c
++  CsvIoMmu.h
+ 
+ [Packages]
+   MdePkg/MdePkg.dec
+@@ -38,6 +40,7 @@
+   SynchronizationLib
+   UefiBootServicesTableLib
+   UefiDriverEntryPoint
++  CsvLib
+ 
+ [Pcd]
+   gEfiMdePkgTokenSpaceGuid.PcdConfidentialComputingGuestAttr
+@@ -45,6 +48,7 @@
+ [Protocols]
+   gEdkiiIoMmuProtocolGuid                     ## SOMETIME_PRODUCES
+   gIoMmuAbsentProtocolGuid                    ## SOMETIME_PRODUCES
++  gCsvSharedMemoryProtocolGuid
+ 
+ [Depex]
+-  TRUE
++  gCsvSharedMemoryProtocolGuid
+-- 
+2.25.1
+

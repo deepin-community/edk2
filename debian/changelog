@@ -1,3 +1,20 @@
+edk2 (2024.08-2deepin1) unstable; urgency=medium
+
+ * Add support for Hygon CSV3 feature:
+   - d/p/0004-MdePkg-Add-StandardSignatureIsHygonGenuine-in-BaseCp.patch
+   - d/p/0005-UefiCpuPkg-LocalApicLib-Exclude-second-SendIpi-seque.patch
+   - d/p/0006-OvmfPkg-Add-CSV-secure-call-library-on-Hygon-CPU.patch
+   - d/p/0007-OvmfPkg-ResetVector-Support-CSV-in-ResetVector-phase.patch
+   - d/p/0008-OvmfPkg-PlatformPei-Initialize-CSV-VM-s-memory.patch
+   - d/p/0009-OvmfPkg-BaseMemcryptSevLib-update-page-status-to-Sec.patch
+   - d/p/0010-OvmfPkg-Tcg-Add-CsvLib-for-TpmMmioSevDecryptPei.patch
+   - d/p/0011-OvmfPkg-Add-CsvDxe-driver.patch
+   - d/p/0012-OvmfPkg-IoMmuDxe-Add-CsvIoMmu-protocol.patch
+   - d/p/0013-OvmfPkg-Use-classic-mmio-window-for-CSV-guest.patch
+   - d/p/0014-OvmfPkg-IoMmuDxe-Implement-SetAttribute-of-CsvIoMmu.patch
+
+ -- hanliyang <hanliyang@hygon.cn>  Wed, 09 Oct 2024 21:26:28 +0000
+
 edk2 (2024.08-2) unstable; urgency=medium
 
   * qemu-efi-riscv64: Fix crash in KVM-based emulation (LP: #2036604):

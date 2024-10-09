@@ -1,0 +1,74 @@
+From c7d72af42ee7146da7e3c14d2a422e8ceef45253 Mon Sep 17 00:00:00 2001
+From: Liu Zixing <liuzixing@hygon.cn>
+Date: Sat, 26 Feb 2022 14:39:06 +0800
+Subject: [PATCH 09/14] OvmfPkg/BaseMemcryptSevLib: update page status to
+ Secure Processor for CSV
+
+For CSV VM, when encrypting/decrypting a shared/private memory region,
+guest needs to
+ - set/clear the c-bit in guest page table
+ - the Secure Processor should be updated accordingly
+
+The BaseMemcryptSevLib has done the first step.
+Calling the secure call library for second step.
+
+Signed-off-by: Xin Jiang <jiangxin@hygon.cn>
+---
+ .../BaseMemEncryptSevLib/DxeMemEncryptSevLib.inf   |  1 +
+ .../BaseMemEncryptSevLib/X64/PeiDxeVirtualMemory.c | 14 ++++++++++++++
+ 2 files changed, 15 insertions(+)
+
+diff --git a/OvmfPkg/Library/BaseMemEncryptSevLib/DxeMemEncryptSevLib.inf b/OvmfPkg/Library/BaseMemEncryptSevLib/DxeMemEncryptSevLib.inf
+index 312ee73e..823e5d9d 100644
+--- a/OvmfPkg/Library/BaseMemEncryptSevLib/DxeMemEncryptSevLib.inf
++++ b/OvmfPkg/Library/BaseMemEncryptSevLib/DxeMemEncryptSevLib.inf
+@@ -53,6 +53,7 @@
+   PcdLib
+   CcExitLib
+   AmdSvsmLib
++  CsvLib
+ 
+ [FeaturePcd]
+   gUefiOvmfPkgTokenSpaceGuid.PcdSmmSmramRequire
+diff --git a/OvmfPkg/Library/BaseMemEncryptSevLib/X64/PeiDxeVirtualMemory.c b/OvmfPkg/Library/BaseMemEncryptSevLib/X64/PeiDxeVirtualMemory.c
+index 337a7d92..3edea897 100644
+--- a/OvmfPkg/Library/BaseMemEncryptSevLib/X64/PeiDxeVirtualMemory.c
++++ b/OvmfPkg/Library/BaseMemEncryptSevLib/X64/PeiDxeVirtualMemory.c
+@@ -19,6 +19,8 @@
+ #include "VirtualMemory.h"
+ #include "SnpPageStateChange.h"
+ 
++#include <Library/CsvLib.h>
++
+ STATIC BOOLEAN          mAddressEncMaskChecked = FALSE;
+ STATIC UINT64           mAddressEncMask;
+ STATIC PAGE_TABLE_POOL  *mPageTablePool = NULL;
+@@ -729,6 +731,11 @@ SetMemoryEncDec (
+   BOOLEAN                         IsWpEnabled;
+   UINTN                           OrigLength;
+   RETURN_STATUS                   Status;
++  PHYSICAL_ADDRESS                PageAddress;
++  UINTN                           PageNum;
++
++  PageAddress = PhysicalAddress;
++  PageNum = EFI_SIZE_TO_PAGES (Length);
+ 
+   //
+   // Set PageMapLevel4Entry to suppress incorrect compiler/analyzer warnings.
+@@ -1012,6 +1019,13 @@ Done:
+     EnableReadOnlyPageWriteProtect ();
+   }
+ 
++  if (CsvIsEnabled () && Status == EFI_SUCCESS) {
++     if (Mode == ClearCBit)
++       CsvUpdateMemory (PageAddress, PageNum, TRUE);
++     else
++       CsvUpdateMemory (PageAddress, PageNum, FALSE);
++   }
++
+   return Status;
+ }
+ 
+-- 
+2.25.1
+

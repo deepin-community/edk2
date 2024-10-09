@@ -1,0 +1,137 @@
+From 0f4c760bcff4339b5ffe08b71dea78892b4b7134 Mon Sep 17 00:00:00 2001
+From: Xin Jiang <jiangxin@hygon.cn>
+Date: Thu, 11 Apr 2024 12:02:21 +0800
+Subject: [PATCH 04/14] MdePkg: Add StandardSignatureIsHygonGenuine() in
+ BaseCpuLib
+
+This function allows IA32/X64 code to determine if it is running on an
+Hygon brand processor.
+
+Signed-off-by: Xin Jiang <jiangxin@hygon.cn>
+---
+ MdePkg/Include/Library/CpuLib.h           | 11 ++++++
+ MdePkg/Include/Register/Hygon/Cpuid.h     | 47 +++++++++++++++++++++++
+ MdePkg/Library/BaseCpuLib/X86BaseCpuLib.c | 24 ++++++++++++
+ 3 files changed, 82 insertions(+)
+ create mode 100644 MdePkg/Include/Register/Hygon/Cpuid.h
+
+diff --git a/MdePkg/Include/Library/CpuLib.h b/MdePkg/Include/Library/CpuLib.h
+index 27f3f82a..e987d6f2 100644
+--- a/MdePkg/Include/Library/CpuLib.h
++++ b/MdePkg/Include/Library/CpuLib.h
+@@ -74,6 +74,17 @@ StandardSignatureIsAuthenticAMD (
+   VOID
+   );
+ 
++/**
++  Determine if the standard CPU signature is "HygonGenuine".
++  @retval TRUE  The CPU signature matches.
++  @retval FALSE The CPU signature does not match.
++**/
++BOOLEAN
++EFIAPI
++StandardSignatureIsHygonGenuine (
++  VOID
++  );
++
+ /**
+   Return the 32bit CPU family and model value.
+   @return CPUID[01h].EAX with Processor Type and Stepping ID cleared.
+diff --git a/MdePkg/Include/Register/Hygon/Cpuid.h b/MdePkg/Include/Register/Hygon/Cpuid.h
+new file mode 100644
+index 00000000..e8a2c76b
+--- /dev/null
++++ b/MdePkg/Include/Register/Hygon/Cpuid.h
+@@ -0,0 +1,47 @@
++/** @file
++  CPUID leaf definitions.
++
++  Provides defines for CPUID leaf indexes.  Data structures are provided for
++  registers returned by a CPUID leaf that contain one or more bit fields.
++  If a register returned is a single 32-bit value, then a data structure is
++  not provided for that register.
++
++  Copyright (c) 2022, HYGON. All rights reserved.<BR>
++
++  This program and the accompanying materials are licensed and made available
++  under the terms and conditions of the BSD License which accompanies this
++  distribution. The full text of the license may be found at
++  http://opensource.org/licenses/bsd-license.php
++
++  THE PROGRAM IS DISTRIBUTED UNDER THE BSD LICENSE ON AN "AS IS" BASIS,
++  WITHOUT WARRANTIES OR REPRESENTATIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED.
++**/
++
++#ifndef __HYGON_CPUID_H__
++#define __HYGON_CPUID_H__
++
++/**
++CPUID Signature Information
++
++@param   EAX  CPUID_SIGNATURE (0x00)
++
++@retval  EAX  Returns the highest value the CPUID instruction recognizes for
++              returning basic processor information. The value is returned is
++              processor specific.
++@retval  EBX  First 4 characters of a vendor identification string.
++@retval  ECX  Last 4 characters of a vendor identification string.
++@retval  EDX  Middle 4 characters of a vendor identification string.
++
++**/
++
++///
++/// @{ CPUID signature values returned by HYGON processors
++///
++#define CPUID_SIGNATURE_AUTHENTIC_HYGON_EBX  SIGNATURE_32 ('H', 'y', 'g', 'o')
++#define CPUID_SIGNATURE_AUTHENTIC_HYGON_EDX  SIGNATURE_32 ('n', 'G', 'e', 'n')
++#define CPUID_SIGNATURE_AUTHENTIC_HYGON_ECX  SIGNATURE_32 ('u', 'i', 'n', 'e')
++///
++/// @}
++///
++
++#endif
+diff --git a/MdePkg/Library/BaseCpuLib/X86BaseCpuLib.c b/MdePkg/Library/BaseCpuLib/X86BaseCpuLib.c
+index 1cad32a4..6d7ceb11 100644
+--- a/MdePkg/Library/BaseCpuLib/X86BaseCpuLib.c
++++ b/MdePkg/Library/BaseCpuLib/X86BaseCpuLib.c
+@@ -11,6 +11,7 @@
+ 
+ #include <Register/Intel/Cpuid.h>
+ #include <Register/Amd/Cpuid.h>
++#include <Register/Hygon/Cpuid.h>
+ 
+ #include <Library/BaseLib.h>
+ #include <Library/CpuLib.h>
+@@ -38,6 +39,29 @@ StandardSignatureIsAuthenticAMD (
+           RegEdx == CPUID_SIGNATURE_AUTHENTIC_AMD_EDX);
+ }
+ 
++/**
++  Determine if the standard CPU signature is "HygonGenuine".
++
++  @retval TRUE  The CPU signature matches.
++  @retval FALSE The CPU signature does not match.
++
++**/
++BOOLEAN
++EFIAPI
++StandardSignatureIsHygonGenuine (
++  VOID
++  )
++{
++  UINT32  RegEbx;
++  UINT32  RegEcx;
++  UINT32  RegEdx;
++
++  AsmCpuid (CPUID_SIGNATURE, NULL, &RegEbx, &RegEcx, &RegEdx);
++  return (RegEbx == CPUID_SIGNATURE_AUTHENTIC_HYGON_EBX &&
++          RegEcx == CPUID_SIGNATURE_AUTHENTIC_HYGON_ECX &&
++          RegEdx == CPUID_SIGNATURE_AUTHENTIC_HYGON_EDX);
++}
++
+ /**
+   Return the 32bit CPU family and model value.
+ 
+-- 
+2.25.1
+
