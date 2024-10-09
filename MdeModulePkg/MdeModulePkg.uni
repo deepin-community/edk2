@@ -955,6 +955,14 @@
                                                                                              "BIT 4 - EFI_ACPI_TABLE_VERSION_4_0.<BR>\n"
                                                                                              "BIT 5 - EFI_ACPI_TABLE_VERSION_5_0.<BR>"
 
+#string STR_gEfiMdeModulePkgTokenSpaceGuid_PcdNoACPIReclaimMemory_PROMPT  #language en-US "ACPI Reclaim memory is not available."
+
+#string STR_gEfiMdeModulePkgTokenSpaceGuid_PcdNoACPIReclaimMemory_HELP  #language en-US "Indicates whether ACPI Reclaim memory is not available\n"
+                                                                                     "Default is FALSE that means ACPI Reclaim memory is available\n"
+                                                                                     "If it is set to TRUE that means ACPI Reclaim memory is not available\n"
+                                                                                     "For example ACPI Table protocol will use ACPI NVS memory instead of ACPI Reclaim memory"
+
+
 #string STR_gEfiMdeModulePkgTokenSpaceGuid_PcdHiiOsRuntimeSupport_PROMPT  #language en-US "Enable export HII data and configuration to be used in OS runtime."
 
 #string STR_gEfiMdeModulePkgTokenSpaceGuid_PcdHiiOsRuntimeSupport_HELP  #language en-US "Indicates if HII data and configuration has been exported.<BR><BR>\n"
@@ -1289,6 +1297,24 @@
                                                                                     "  If enabled, stack overflow in UEFI can be caught, preventing chaotic consequences.<BR><BR>\n"
                                                                                     "   TRUE  - UEFI Stack Guard will be enabled.<BR>\n"
                                                                                     "   FALSE - UEFI Stack Guard will be disabled.<BR>"
+
+#string STR_gEfiMdeModulePkgTokenSpaceGuid_PcdTraceHubDebugLevel_PROMPT  #language en-US "Debug level of Trace Hub."
+
+#string STR_gEfiMdeModulePkgTokenSpaceGuid_PcdTraceHubDebugLevel_HELP    #language en-US "Indicate debug level of Trace Hub"
+                                                                                         "  0x0 - TraceHubDebugLevelError.<BR>"
+                                                                                         "  0x1 - TraceHubDebugLevelErrorWarning.<BR>"
+                                                                                         "  0x2 - TraceHubDebugLevelErrorWarningInfo.<BR>"
+                                                                                         "  0x3 - TraceHubDebugLevelErrorWarningInfoVerbose.<BR>"
+
+#string STR_gEfiMdeModulePkgTokenSpaceGuid_PcdEnableTraceHubDebugMsg_PROMPT  #language en-US "Flag to enable or disable Trace Hub message"
+
+#string STR_gEfiMdeModulePkgTokenSpaceGuid_PcdEnableTraceHubDebugMsg_HELP    #language en-US "Enable or Disable Trace Hub message"
+                                                                                             "  FALSE - Disable Trace Hub debug message.<BR>"
+                                                                                             "  TRUE  - Enable Trace Hub debug message.<BR>"
+
+#string STR_gEfiMdeModulePkgTokenSpaceGuid_PcdTraceHubDebugMmioAddress_PROMPT  #language en-US "Output MMIO address of Trace Hub message"
+
+#string STR_gEfiMdeModulePkgTokenSpaceGuid_PcdTraceHubDebugMmioAddress_HELP    #language en-US "Indicate MMIO address where Trace Hub message output to."
 
 #string STR_gEfiMdeModulePkgTokenSpaceGuid_PcdSetNvStoreDefaultId_PROMPT  #language en-US "NV Storage DefaultId"
 

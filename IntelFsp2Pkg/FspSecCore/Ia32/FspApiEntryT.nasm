@@ -109,7 +109,8 @@ struc LoadMicrocodeParamsFsp24
     .FsptArchReserved:        resb    3
     .FsptArchLength:          resd    1
     .FspDebugHandler          resq    1
-    .FsptArchUpd:             resd    4
+    .FspTemporaryRamSize:     resd    1  ; Supported only if ArchRevison is >= 3
+    .FsptArchUpd:             resd    3
     ; }
     ; FSPT_CORE_UPD {
     .MicrocodeCodeAddr:       resq    1
@@ -245,13 +246,29 @@ ASM_PFX(LoadMicrocodeDefault):
    cmp    esp, 0
    jz     ParamError
 
+   ;
+   ; If microcode already loaded before this function, exit this function with SUCCESS.
+   ;
+   mov   ecx, MSR_IA32_BIOS_SIGN_ID
+   xor   eax, eax               ; Clear EAX
+   xor   edx, edx               ; Clear EDX
+   wrmsr                        ; Load 0 to MSR at 8Bh
+
+   mov   eax, 1
+   cpuid
+   mov   ecx, MSR_IA32_BIOS_SIGN_ID
+   rdmsr                         ; Get current microcode signature
+   xor   eax, eax
+   test  edx, edx
+   jnz   Exit2
+
    ; skip loading Microcode if the MicrocodeCodeSize is zero
    ; and report error if size is less than 2k
    ; first check UPD header revision
    cmp    byte [esp + LoadMicrocodeParamsFsp22.FspUpdHeaderRevision], 2
    jb     Fsp20UpdHeader
    cmp    byte [esp + LoadMicrocodeParamsFsp22.FsptArchRevision], 2
-   je     Fsp24UpdHeader
+   jae    Fsp24UpdHeader
    jmp    Fsp22UpdHeader
 
 Fsp20UpdHeader:
@@ -330,7 +347,7 @@ CheckMainHeader:
    cmp   ebx, dword [esi + MicrocodeHdr.MicrocodeHdrProcessor]
    jne   LoadMicrocodeDefault1
    test  edx, dword [esi + MicrocodeHdr.MicrocodeHdrFlags ]
-   jnz   LoadCheck  ; Jif signature and platform ID match
+   jnz   LoadMicrocode  ; Jif signature and platform ID match
 
 LoadMicrocodeDefault1:
    ; Check if extended header exists
@@ -363,7 +380,7 @@ CheckExtSig:
    cmp   dword [edi + ExtSig.ExtSigProcessor], ebx
    jne   LoadMicrocodeDefault2
    test  dword [edi + ExtSig.ExtSigFlags], edx
-   jnz   LoadCheck      ; Jif signature and platform ID match
+   jnz   LoadMicrocode      ; Jif signature and platform ID match
 LoadMicrocodeDefault2:
    ; Check if any more extended signatures exist
    add   edi, ExtSig.size
@@ -389,7 +406,7 @@ CheckAddress:
    cmp   byte [esp + LoadMicrocodeParamsFsp22.FspUpdHeaderRevision], 2
    jb     Fsp20UpdHeader1
    cmp    byte [esp + LoadMicrocodeParamsFsp22.FsptArchRevision], 2
-   je     Fsp24UpdHeader1;
+   jae    Fsp24UpdHeader1;
    jmp    Fsp22UpdHeader1
 
 Fsp20UpdHeader1:
@@ -435,23 +452,7 @@ LoadMicrocodeDefault4:
    ; Is valid Microcode start point ?
    cmp   dword [esi + MicrocodeHdr.MicrocodeHdrVersion], 0ffffffffh
    jz    Done
-
-LoadCheck:
-   ; Get the revision of the current microcode update loaded
-   mov   ecx, MSR_IA32_BIOS_SIGN_ID
-   xor   eax, eax               ; Clear EAX
-   xor   edx, edx               ; Clear EDX
-   wrmsr                        ; Load 0 to MSR at 8Bh
-
-   mov   eax, 1
-   cpuid
-   mov   ecx, MSR_IA32_BIOS_SIGN_ID
-   rdmsr                        ; Get current microcode signature
-
-   ; Verify this microcode update is not already loaded
-   cmp   dword [esi + MicrocodeHdr.MicrocodeHdrRevision], edx
-   je    Continue
-
+   jmp   CheckMainHeader
 LoadMicrocode:
    ; EAX contains the linear address of the start of the Update Data
    ; EDX contains zero
@@ -465,10 +466,12 @@ LoadMicrocode:
    mov   eax, 1
    cpuid
 
-Continue:
-   jmp   NextMicrocode
-
 Done:
+   mov   ecx, MSR_IA32_BIOS_SIGN_ID
+   xor   eax, eax               ; Clear EAX
+   xor   edx, edx               ; Clear EDX
+   wrmsr                        ; Load 0 to MSR at 8Bh
+
    mov   eax, 1
    cpuid
    mov   ecx, MSR_IA32_BIOS_SIGN_ID
@@ -495,7 +498,8 @@ ASM_PFX(EstablishStackFsp):
   ; Enable FSP STACK
   ;
   mov       esp, DWORD [ASM_PFX(PcdGet32 (PcdTemporaryRamBase))]
-  add       esp, DWORD [ASM_PFX(PcdGet32 (PcdTemporaryRamSize))]
+  LOAD_TEMPORARY_RAM_SIZE ecx
+  add       esp, ecx
 
   push      DATA_LEN_OF_MCUD     ; Size of the data region
   push      4455434Dh            ; Signature of the  data region 'MCUD'
@@ -504,7 +508,7 @@ ASM_PFX(EstablishStackFsp):
   cmp       byte [edx + LoadMicrocodeParamsFsp22.FspUpdHeaderRevision], 2
   jb        Fsp20UpdHeader2
   cmp       byte [esp + LoadMicrocodeParamsFsp22.FsptArchRevision], 2
-  je        Fsp24UpdHeader2
+  jae       Fsp24UpdHeader2
   jmp       Fsp22UpdHeader2
 
 Fsp20UpdHeader2:
@@ -552,12 +556,13 @@ ContinueAfterUpdPush:
   ;
   ; Set ECX/EDX to the BootLoader temporary memory range
   ;
-  mov       ecx,  [ASM_PFX(PcdGet32 (PcdTemporaryRamBase))]
-  mov       edx, ecx
-  add       edx,  [ASM_PFX(PcdGet32 (PcdTemporaryRamSize))]
+  mov       edx,  [ASM_PFX(PcdGet32 (PcdTemporaryRamBase))]
+  LOAD_TEMPORARY_RAM_SIZE ecx
+  add       edx, ecx
   sub       edx,  [ASM_PFX(PcdGet32 (PcdFspReservedBufferSize))]
+  mov       ecx,  [ASM_PFX(PcdGet32 (PcdTemporaryRamBase))]
 
-  cmp       ecx, edx        ;If PcdFspReservedBufferSize >= PcdTemporaryRamSize, then error.
+  cmp       ecx, edx        ;If PcdFspReservedBufferSize >= TemporaryRamSize, then error.
   jb        EstablishStackFspSuccess
   mov       eax, 80000003h  ;EFI_UNSUPPORTED
   jmp       EstablishStackFspExit
@@ -597,6 +602,45 @@ ASM_PFX(TempRamInitApi):
   CALL_EBP  ASM_PFX(LoadUpdPointerToECX) ; ECX for UPD param
   SAVE_ECX                               ; save UPD param to slot 3 in xmm6
 
+  mov       edx, ASM_PFX(PcdGet32 (PcdTemporaryRamSize))
+  mov       edx, DWORD [edx]
+  ;
+  ; Read Fsp Arch2 revision
+  ;
+  cmp       byte [ecx + LoadMicrocodeParamsFsp24.FsptArchRevision], 3
+  jb        UseTemporaryRamSizePcd
+  ;
+  ; Read ARCH2 UPD input value.
+  ;
+  mov       ebx, DWORD [ecx + LoadMicrocodeParamsFsp24.FspTemporaryRamSize]
+  ;
+  ; As per spec, if Bootloader pass zero, use Fsp defined Size
+  ;
+  cmp       ebx, 0
+  jz        UseTemporaryRamSizePcd
+
+  xor       eax, eax
+  mov       ax,  WORD [esi + 020h]      ; Read ImageAttribute
+  test      ax,  16                     ; check if Bit4 is set
+  jnz       ConsumeInputConfiguration
+  ;
+  ; Sometimes user may change input value even if it is not supported
+  ; return error if input is Non-Zero and not same as PcdTemporaryRamSize.
+  ;
+  cmp       ebx, edx
+  je        UseTemporaryRamSizePcd
+  mov       eax, 080000002h      ; RETURN_INVALID_PARAMETER
+  jmp       TempRamInitExit
+ConsumeInputConfiguration:
+  ;
+  ; Read ARCH2 UPD value and Save.
+  ;
+  SAVE_TEMPORARY_RAM_SIZE ebx
+  jmp       GotTemporaryRamSize
+UseTemporaryRamSizePcd:
+  SAVE_TEMPORARY_RAM_SIZE edx
+GotTemporaryRamSize:
+  LOAD_ECX
   ;
   ; Sec Platform Init
   ;

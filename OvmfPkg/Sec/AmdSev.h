@@ -71,7 +71,7 @@ SevEsIsEnabled (
 /**
  Validate System RAM used for decompressing the PEI and DXE firmware volumes
  when SEV-SNP is active. The PCDs SecValidatedStart and SecValidatedEnd are
- set in OvmfPkg/FvmainCompactScratchEnd.fdf.inc.
+ set in OvmfPkg/Include/Fdf/FvmainCompactScratchEnd.fdf.inc.
 
 **/
 VOID
@@ -88,6 +88,20 @@ SecValidateSystemRam (
 **/
 BOOLEAN
 SevSnpIsEnabled (
+  VOID
+  );
+
+/**
+  Map MMIO regions unencrypted if SEV-ES is active.
+
+  During early booting, page table entries default to having the encryption bit
+  set for SEV-ES/SEV-SNP guests. In cases where there is MMIO to an address, the
+  encryption bit should be cleared. Clear it here for any known MMIO accesses
+  during SEC, which is currently just the APIC base address.
+
+**/
+VOID
+SecMapApicBaseUnencrypted (
   VOID
   );
 

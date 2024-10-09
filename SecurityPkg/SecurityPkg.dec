@@ -5,7 +5,7 @@
 #  It also provides the definitions(including PPIs/PROTOCOLs/GUIDs and library classes)
 #  and libraries instances, which are used for those features.
 #
-# Copyright (c) 2009 - 2020, Intel Corporation. All rights reserved.<BR>
+# Copyright (c) 2009 - 2024, Intel Corporation. All rights reserved.<BR>
 # (C) Copyright 2015 Hewlett Packard Enterprise Development LP <BR>
 # Copyright (c) Microsoft Corporation.<BR>
 # SPDX-License-Identifier: BSD-2-Clause-Patent
@@ -21,6 +21,11 @@
 
 [Includes]
   Include
+  Test/Mock/Include
+
+[Includes.Common.Private]
+  DeviceSecurity/SpdmLib/Include
+  DeviceSecurity/SpdmLib/libspdm/include
 
 [LibraryClasses]
   ##  @libraryclass  Provides hash interfaces from different implementations.
@@ -80,14 +85,6 @@
   #
   TcgStorageOpalLib|Include/Library/TcgStorageOpalLib.h
 
-  ## @libraryclass  Provides interfaces to access RPMC device.
-  #
-  RpmcLib|Include/Library/RpmcLib.h
-
-  ## @libraryclass  Provides interfaces to access variable root key.
-  #
-  VariableKeyLib|Include/Library/VariableKeyLib.h
-
   ## @libraryclass  Provides interfaces about firmware TPM measurement.
   #
   TcgEventLogRecordLib|Include/Library/TcgEventLogRecordLib.h
@@ -103,6 +100,10 @@
   ## @libraryclass  Provides support to manage variable 'PK' related protections.
   #
   PlatformPKProtectionLib|Include/Library/PlatformPKProtectionLib.h
+
+  ##  @libraryclass Perform SPDM (following SPDM spec) and measure data to TPM (following TCG PFP spec).
+  ##
+  SpdmSecurityLib|Include/Library/SpdmSecurityLib.h
 
 [Guids]
   ## Security package token space guid.
@@ -226,6 +227,20 @@
   ## GUID used to specify section with default dbt content
   gDefaultdbtFileGuid                = { 0x36c513ee, 0xa338, 0x4976, { 0xa0, 0xfb, 0x6d, 0xdb, 0xa3, 0xda, 0xfe, 0x87 } }
 
+  ## GUID used to generate Spdm Uid
+  gEfiDeviceSecuritySpdmUidGuid = {0xe37b5665, 0x5ef9, 0x4e7e, {0xb4, 0x91, 0xd6, 0x78, 0xab, 0xff, 0xfb, 0xcb }}
+
+  ## GUID used to tag the HOB indicating the TPM instance.
+  ## The GUIDed HOB contains the same value as PcdGetPtr (PcdTpmInstanceGuid).
+  gEdkiiTpmInstanceHobGuid           = { 0x4551b023, 0xba46, 0x4584, { 0x81, 0xcd, 0x4d, 0xe8, 0x61, 0xa7, 0x28, 0xbe } }
+
+  ## GUID used to tag the HOB indicating the Version of Physical Presence interface.
+  ## The GUIDed HOB contains the same value as PcdGetPtr (PcdTcgPhysicalPresenceInterfaceVer).
+  gEdkiiTcgPhysicalPresenceInterfaceVerHobGuid = { 0x3979411a, 0x4e6d, 0x47e4, { 0x94, 0x4b, 0x0e, 0xcc, 0x6c, 0xf6, 0xc0, 0xcd } }
+
+  ## Include/Guid/Tcg2AcpiCommunicateBuffer.h
+  gEdkiiTcg2AcpiCommunicateBufferHobGuid = { 0xcefea14f, 0x9f1a, 0x4774, { 0x8d, 0x18, 0x79, 0x93, 0x8d, 0x48, 0xfe, 0x7d } }
+
 [Ppis]
   ## The PPI GUID for that TPM physical presence should be locked.
   # Include/Ppi/LockPhysicalPresence.h
@@ -315,10 +330,10 @@
   gEfiSecurityPkgTokenSpaceGuid.PcdTpmPlatformClass|0|UINT8|0x00000006
 
   ## Progress Code for TPM device subclass definitions.<BR><BR>
-  #  EFI_PERIPHERAL_TPM  = (EFI_PERIPHERAL | 0x000D0000) = 0x010D0000<BR>
+  #  EFI_PERIPHERAL_TPM  = (EFI_PERIPHERAL | 0x000E0000) = 0x010E0000<BR>
   # @Prompt Status Code for TPM device definitions
-  # @ValidList  0x80000003 | 0x010D0000
-  gEfiSecurityPkgTokenSpaceGuid.PcdStatusCodeSubClassTpmDevice|0x010D0000|UINT32|0x00000007
+  # @ValidList  0x80000003 | 0x010E0000
+  gEfiSecurityPkgTokenSpaceGuid.PcdStatusCodeSubClassTpmDevice|0x010E0000|UINT32|0x00000007
 
   ## Defines the IO port used to trigger a software System Management Interrupt (SMI).<BR><BR>
   #  Used as the SMI Command IO port by security functionality that triggers a software SMI such
@@ -331,8 +346,6 @@
   # @Prompt Status Code for FV verification result
   gEfiSecurityPkgTokenSpaceGuid.PcdStatusCodeFvVerificationPass|0x0303100A|UINT32|0x00010030
   gEfiSecurityPkgTokenSpaceGuid.PcdStatusCodeFvVerificationFail|0x0303100B|UINT32|0x00010031
-
-  gEfiSecurityPkgTokenSpaceGuid.PcdCpuRngSupportedAlgorithm|{0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00}|VOID*|0x00010032
 
 [PcdsFixedAtBuild, PcdsPatchableInModule, PcdsDynamic, PcdsDynamicEx]
   ## Image verification policy for OptionRom. Only following values are valid:<BR><BR>
@@ -581,6 +594,19 @@
   ## This PCD records LASA field in TPM2 ACPI table.
   # @Prompt Tpm2AcpiTableLasa LASA field in TPM2 ACPI table.
   gEfiSecurityPkgTokenSpaceGuid.PcdTpm2AcpiTableLasa|0|UINT64|0x00010023
+
+  ## This PCD records LAML field in CC EVENTLOG ACPI table.
+  gEfiSecurityPkgTokenSpaceGuid.PcdCcEventlogAcpiTableLaml|0|UINT32|0x00010025
+
+  ## This PCD records LASA field in CC EVENTLOG ACPI table.
+  gEfiSecurityPkgTokenSpaceGuid.PcdCcEventlogAcpiTableLasa|0|UINT64|0x00010026
+
+[PcdsFeatureFlag]
+  ## Indicates if the platform requires PK to be self-signed when setting the PK in setup mode.
+  #   TRUE  - Require PK to be self-signed.
+  #   FALSE - Do not require PK to be self-signed.
+  # @Prompt Require PK to be self-signed
+  gEfiMdeModulePkgTokenSpaceGuid.PcdRequireSelfSignedPk|FALSE|BOOLEAN|0x00010027
 
 [UserExtensions.TianoCore."ExtraFiles"]
   SecurityPkgExtra.uni

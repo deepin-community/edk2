@@ -23,24 +23,25 @@
         cbnz   SAFE_XREG, 1f        ;\
         b      .                    ;// We should never get here
 
-// CurrentEL : 0xC = EL3; 8 = EL2; 4 = EL1
-// This only selects between EL1 and EL2 and EL3, else we die.
-// Provide the Macro with a safe temp xreg to use.
-#define EL1_OR_EL2_OR_EL3(SAFE_XREG) \
-        mrs    SAFE_XREG, CurrentEL ;\
-        cmp    SAFE_XREG, #0x8      ;\
-        b.gt   3f                   ;\
-        b.eq   2f                   ;\
-        cbnz   SAFE_XREG, 1f        ;\
-        b      .                    ;// We should never get here
-
 #define _ASM_FUNC(Name, Section)    \
   .global   Name                  ; \
   .section  #Section, "ax"        ; \
   .type     Name, %function       ; \
-  Name:
+  Name:                           ; \
+  AARCH64_BTI(c)
+
+#define _ASM_FUNC_ALIGN(Name, Section, Align)       \
+  .global   Name                                  ; \
+  .section  #Section, "ax"                        ; \
+  .type     Name, %function                       ; \
+  .balign   Align                                 ; \
+  Name:                                           ; \
+  AARCH64_BTI(c)
 
 #define ASM_FUNC(Name)  _ASM_FUNC(ASM_PFX(Name), .text. ## Name)
+
+#define ASM_FUNC_ALIGN(Name, Align)  \
+  _ASM_FUNC_ALIGN(ASM_PFX(Name), .text. ## Name, Align)
 
 #define MOV32(Reg, Val)                   \
   movz      Reg, (Val) >> 16, lsl #16   ; \

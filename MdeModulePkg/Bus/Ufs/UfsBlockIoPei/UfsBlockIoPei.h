@@ -1,6 +1,6 @@
 /** @file
 
-  Copyright (c) 2014 - 2018, Intel Corporation. All rights reserved.<BR>
+  Copyright (c) 2014 - 2024, Intel Corporation. All rights reserved.<BR>
   SPDX-License-Identifier: BSD-2-Clause-Patent
 
 **/
@@ -22,6 +22,7 @@
 #include <Library/MemoryAllocationLib.h>
 #include <Library/IoLib.h>
 #include <Library/TimerLib.h>
+#include <Library/PcdLib.h>
 #include <Library/PeiServicesLib.h>
 
 #include <IndustryStandard/Scsi.h>
@@ -133,8 +134,6 @@ typedef struct _UFS_PEIM_HC_PRIVATE_DATA {
 
 #define ROUNDUP8(x)  (((x) % 8 == 0) ? (x) : ((x) / 8 + 1) * 8)
 
-#define IS_ALIGNED(addr, size)  (((UINTN) (addr) & (size - 1)) == 0)
-
 #define GET_UFS_PEIM_HC_PRIVATE_DATA_FROM_THIS(a)         CR (a, UFS_PEIM_HC_PRIVATE_DATA, BlkIoPpi, UFS_PEIM_HC_SIG)
 #define GET_UFS_PEIM_HC_PRIVATE_DATA_FROM_THIS2(a)        CR (a, UFS_PEIM_HC_PRIVATE_DATA, BlkIo2Ppi, UFS_PEIM_HC_SIG)
 #define GET_UFS_PEIM_HC_PRIVATE_DATA_FROM_THIS_NOTIFY(a)  CR (a, UFS_PEIM_HC_PRIVATE_DATA, EndOfPeiNotifyList, UFS_PEIM_HC_SIG)
@@ -226,6 +225,25 @@ EFI_STATUS
 UfsSetFlag (
   IN  UFS_PEIM_HC_PRIVATE_DATA  *Private,
   IN  UINT8                     FlagId
+  );
+
+/**
+  Read specified flag from a UFS device.
+
+  @param[in]  Private           The pointer to the UFS_PEIM_HC_PRIVATE_DATA data structure.
+  @param[in]  FlagId            The ID of flag to be read.
+  @param[out] Value             The flag's value.
+
+  @retval EFI_SUCCESS           The flag was read successfully.
+  @retval EFI_DEVICE_ERROR      A device error occurred while attempting to read the flag.
+  @retval EFI_TIMEOUT           A timeout occurred while waiting for the completion of reading the flag.
+
+**/
+EFI_STATUS
+UfsReadFlag (
+  IN  UFS_PEIM_HC_PRIVATE_DATA  *Private,
+  IN  UINT8                     FlagId,
+  OUT UINT8                     *Value
   );
 
 /**

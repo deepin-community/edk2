@@ -1037,12 +1037,17 @@ AdjustPoolHeadA (
   Get the page base address according to pool head address.
 
   @param[in]  Memory    Head address of pool to free.
+  @param[in]  NoPages   Number of pages actually allocated.
+  @param[in]  Size      Size of memory requested.
+                        (plus pool head/tail overhead)
 
   @return Address of pool head.
 **/
 VOID *
 AdjustPoolHeadF (
-  IN EFI_PHYSICAL_ADDRESS  Memory
+  IN EFI_PHYSICAL_ADDRESS  Memory,
+  IN UINTN                 NoPages,
+  IN UINTN                 Size
   )
 {
   if ((Memory == 0) || ((PcdGet8 (PcdHeapGuardPropertyMask) & BIT7) != 0)) {
@@ -1053,9 +1058,12 @@ AdjustPoolHeadF (
   }
 
   //
-  // Pool head is put near the tail Guard
+  // Pool head is put near the tail Guard. We need to exactly undo the addition done in AdjustPoolHeadA
+  // because we may not have allocated the pool head on the first allocated page, since we are aligned to
+  // the tail and on some architectures, the runtime page allocation granularity is > one page. So we allocate
+  // more pages than we need and put the pool head somewhere past the first page.
   //
-  return (VOID *)(UINTN)(Memory & ~EFI_PAGE_MASK);
+  return (VOID *)(UINTN)(Memory + Size - EFI_PAGES_TO_SIZE (NoPages));
 }
 
 /**
@@ -1398,34 +1406,39 @@ GuardAllFreedPages (
       TableEntry = ((UINT64 *)(UINTN)(Tables[Level]))[Indices[Level]];
       Address    = Addresses[Level];
 
-      if (Level < GUARDED_HEAP_MAP_TABLE_DEPTH - 1) {
-        Level           += 1;
-        Tables[Level]    = TableEntry;
-        Addresses[Level] = Address;
-        Indices[Level]   = 0;
-
-        continue;
+      if (TableEntry == 0) {
+        GuardPageNumber = 0;
+        GuardPage       = (UINT64)-1;
       } else {
-        BitIndex = 1;
-        while (BitIndex != 0) {
-          if ((TableEntry & BitIndex) != 0) {
-            if (GuardPage == (UINT64)-1) {
-              GuardPage = Address;
+        if (Level < GUARDED_HEAP_MAP_TABLE_DEPTH - 1) {
+          Level           += 1;
+          Tables[Level]    = TableEntry;
+          Addresses[Level] = Address;
+          Indices[Level]   = 0;
+
+          continue;
+        } else {
+          BitIndex = 1;
+          while (BitIndex != 0) {
+            if ((TableEntry & BitIndex) != 0) {
+              if (GuardPage == (UINT64)-1) {
+                GuardPage = Address;
+              }
+
+              ++GuardPageNumber;
+            } else if (GuardPageNumber > 0) {
+              GuardFreedPages (GuardPage, GuardPageNumber);
+              GuardPageNumber = 0;
+              GuardPage       = (UINT64)-1;
             }
 
-            ++GuardPageNumber;
-          } else if (GuardPageNumber > 0) {
-            GuardFreedPages (GuardPage, GuardPageNumber);
-            GuardPageNumber = 0;
-            GuardPage       = (UINT64)-1;
-          }
+            if (TableEntry == 0) {
+              break;
+            }
 
-          if (TableEntry == 0) {
-            break;
+            Address += EFI_PAGES_TO_SIZE (1);
+            BitIndex = LShiftU64 (BitIndex, 1);
           }
-
-          Address += EFI_PAGES_TO_SIZE (1);
-          BitIndex = LShiftU64 (BitIndex, 1);
         }
       }
     }

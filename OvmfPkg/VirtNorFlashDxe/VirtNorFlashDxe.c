@@ -394,14 +394,14 @@ NorFlashFvbInitialize (
                   EfiGcdMemoryTypeMemoryMappedIo,
                   Instance->DeviceBaseAddress,
                   RuntimeMmioRegionSize,
-                  EFI_MEMORY_WC | EFI_MEMORY_RUNTIME
+                  EFI_MEMORY_UC | EFI_MEMORY_RUNTIME
                   );
   ASSERT_EFI_ERROR (Status);
 
   Status = gDS->SetMemorySpaceAttributes (
                   Instance->DeviceBaseAddress,
                   RuntimeMmioRegionSize,
-                  EFI_MEMORY_WC | EFI_MEMORY_RUNTIME
+                  EFI_MEMORY_UC | EFI_MEMORY_RUNTIME
                   );
   ASSERT_EFI_ERROR (Status);
 
@@ -422,11 +422,11 @@ NorFlashFvbInitialize (
   // Install the Default FVB header if required
   if (EFI_ERROR (Status)) {
     // There is no valid header, so time to install one.
-    DEBUG ((DEBUG_INFO, "%a: The FVB Header is not valid.\n", __FUNCTION__));
+    DEBUG ((DEBUG_INFO, "%a: The FVB Header is not valid.\n", __func__));
     DEBUG ((
       DEBUG_INFO,
       "%a: Installing a correct one for this volume.\n",
-      __FUNCTION__
+      __func__
       ));
 
     // Erase all the NorFlash that is reserved for variable storage

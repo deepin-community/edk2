@@ -11,12 +11,11 @@
 
 #include <PiPei.h>
 
-#include <Library/PeimEntryPoint.h>
 #include <Library/BaseLib.h>
 #include <Library/DebugLib.h>
 #include <Library/BaseMemoryLib.h>
 #include <Library/PcdLib.h>
-#include <Library/UefiCpuLib.h>
+#include <Library/CpuLib.h>
 #include <Library/DebugAgentLib.h>
 #include <Library/IoLib.h>
 #include <Library/PeCoffLib.h>
@@ -24,9 +23,11 @@
 #include <Library/LocalApicLib.h>
 #include <Library/CpuExceptionHandlerLib.h>
 #include <IndustryStandard/Tdx.h>
-#include <Library/PlatformInitLib.h>
+#include <Library/TdxHelperLib.h>
 #include <Library/CcProbeLib.h>
 #include <Library/PeilessStartupLib.h>
+#include <Register/Intel/ArchitecturalMsr.h>
+#include <Register/Intel/Cpuid.h>
 
 #define SEC_IDT_ENTRY_COUNT  34
 
@@ -48,6 +49,43 @@ IA32_IDT_GATE_DESCRIPTOR  mIdtEntryTemplate = {
   }
 };
 
+//
+// Enable MTRR early, set default type to write back.
+// Needed to make sure caching is enabled,
+// without this lzma decompress can be very slow.
+//
+STATIC
+VOID
+SecMtrrSetup (
+  VOID
+  )
+{
+  CPUID_VERSION_INFO_EDX           Edx;
+  MSR_IA32_MTRR_DEF_TYPE_REGISTER  DefType;
+
+  AsmCpuid (CPUID_VERSION_INFO, NULL, NULL, NULL, &Edx.Uint32);
+  if (!Edx.Bits.MTRR) {
+    return;
+  }
+
+  if (CcProbe () == CcGuestTypeIntelTdx) {
+    //
+    // According to TDX Spec, the default MTRR type is enforced to WB
+    // and CR0.CD is enforced to 0.
+    // The TD guest has to disable MTRR otherwise it tries to
+    // program MTRRs to disable caching. CR0.CD=1 results in the
+    // unexpected #VE.
+    //
+    DEBUG ((DEBUG_INFO, "%a: Skip TD-Guest\n", __func__));
+    return;
+  }
+
+  DefType.Uint64    = AsmReadMsr64 (MSR_IA32_MTRR_DEF_TYPE);
+  DefType.Bits.Type = MSR_IA32_MTRR_CACHE_WRITE_BACK;
+  DefType.Bits.E    = 1; /* enable */
+  AsmWriteMsr64 (MSR_IA32_MTRR_DEF_TYPE, DefType.Uint64);
+}
+
 VOID
 EFIAPI
 SecCoreStartupWithStack (
@@ -63,11 +101,24 @@ SecCoreStartupWithStack (
 
   if (CcProbe () == CcGuestTypeIntelTdx) {
     //
+    // From the security perspective all the external input should be measured before
+    // it is consumed. TdHob and Configuration FV (Cfv) image are passed from VMM
+    // and should be measured here.
+    //
+    if (EFI_ERROR (TdxHelperMeasureTdHob ())) {
+      CpuDeadLoop ();
+    }
+
+    if (EFI_ERROR (TdxHelperMeasureCfvImage ())) {
+      CpuDeadLoop ();
+    }
+
+    //
     // For Td guests, the memory map info is in TdHobLib. It should be processed
     // first so that the memory is accepted. Otherwise access to the unaccepted
     // memory will trigger tripple fault.
     //
-    if (ProcessTdxHobList () != EFI_SUCCESS) {
+    if (TdxHelperProcessTdHob () != EFI_SUCCESS) {
       CpuDeadLoop ();
     }
   }
@@ -112,7 +163,7 @@ SecCoreStartupWithStack (
   IdtDescriptor.Base  = (UINTN)&IdtTableInStack.IdtTable;
   IdtDescriptor.Limit = (UINT16)(sizeof (IdtTableInStack.IdtTable) - 1);
 
-  ProcessLibraryConstructorList (NULL, NULL);
+  ProcessLibraryConstructorList ();
 
   //
   // Load the IDTR.
@@ -190,6 +241,11 @@ SecCoreStartupWithStack (
   //
   InitializeApicTimer (0, MAX_UINT32, TRUE, 5);
   DisableApicTimerInterrupt ();
+
+  //
+  // Initialize MTRR
+  //
+  SecMtrrSetup ();
 
   PeilessStartup (&SecCoreData);
 

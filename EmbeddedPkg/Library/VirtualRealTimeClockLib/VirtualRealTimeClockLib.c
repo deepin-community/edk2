@@ -2,7 +2,7 @@
  *
  *  Implement virtual EFI RealTimeClock runtime services.
  *
- *  Coypright (c) 2019, Pete Batard <pete@akeo.ie>
+ *  Copyright (c) 2019, Pete Batard <pete@akeo.ie>
  *  Copyright (c) 2018, Andrei Warkentin <andrey.warkentin@gmail.com>
  *  Copyright (c) 2011-2021, ARM Ltd. All rights reserved.
  *  Copyright (c) 2008-2010, Apple Inc. All rights reserved.
@@ -401,22 +401,4 @@ LibRtcInitialize (
   )
 {
   return EFI_SUCCESS;
-}
-
-/**
-   Fixup internal data so that EFI can be call in virtual mode.
-   Call the passed in Child Notify event and convert any pointers in
-   lib to virtual mode.
-
-   @param[in]    Event   The Event that is being processed
-   @param[in]    Context Event Context
-**/
-VOID
-EFIAPI
-LibRtcVirtualNotifyEvent (
-  IN EFI_EVENT  Event,
-  IN VOID       *Context
-  )
-{
-  return;
 }

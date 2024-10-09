@@ -807,6 +807,7 @@ X509GetTBSCert (
   UINT32       Asn1Tag;
   UINT32       ObjClass;
   UINTN        Length;
+  UINTN        Inf;
 
   //
   // Check input parameters.
@@ -836,19 +837,19 @@ X509GetTBSCert (
   //
   Temp   = Cert;
   Length = 0;
-  ASN1_get_object (&Temp, (long *)&Length, (int *)&Asn1Tag, (int *)&ObjClass, (long)CertSize);
+  Inf    = ASN1_get_object (&Temp, (long *)&Length, (int *)&Asn1Tag, (int *)&ObjClass, (long)CertSize);
 
-  if (Asn1Tag != V_ASN1_SEQUENCE) {
+  if (((Inf & 0x80) == 0x80) || (Asn1Tag != V_ASN1_SEQUENCE)) {
     return FALSE;
   }
 
   *TBSCert = (UINT8 *)Temp;
 
-  ASN1_get_object (&Temp, (long *)&Length, (int *)&Asn1Tag, (int *)&ObjClass, (long)Length);
+  Inf = ASN1_get_object (&Temp, (long *)&Length, (int *)&Asn1Tag, (int *)&ObjClass, (long)Length);
   //
   // Verify the parsed TBSCertificate is one correct SEQUENCE data.
   //
-  if (Asn1Tag != V_ASN1_SEQUENCE) {
+  if (((Inf & 0x80) == 0x80) || (Asn1Tag != V_ASN1_SEQUENCE)) {
     return FALSE;
   }
 
@@ -1390,7 +1391,7 @@ Cleanup:
   @param[in]      Cert             Pointer to the DER-encoded X509 certificate.
   @param[in]      CertSize         Size of the X509 certificate in bytes.
   @param[out]     Usage            Key Usage bytes.
-  @param[in, out] UsageSize        Key Usage buffer sizs in bytes.
+  @param[in, out] UsageSize        Key Usage buffer size in bytes.
 
   @retval TRUE                     The Usage bytes retrieve successfully.
   @retval FALSE                    If Cert is NULL.
@@ -1691,12 +1692,12 @@ _Exit:
   @param[in]      RootCertLength    Trusted Root Certificate buffer length
   @param[in]      CertChain         One or more ASN.1 DER-encoded X.509 certificates
                                     where the first certificate is signed by the Root
-                                    Certificate or is the Root Cerificate itself. and
-                                    subsequent cerificate is signed by the preceding
-                                    cerificate.
+                                    Certificate or is the Root Certificate itself. and
+                                    subsequent certificate is signed by the preceding
+                                    certificate.
   @param[in]      CertChainLength   Total length of the certificate chain, in bytes.
 
-  @retval  TRUE   All cerificates was issued by the first certificate in X509Certchain.
+  @retval  TRUE   All certificates was issued by the first certificate in X509Certchain.
   @retval  FALSE  Invalid certificate or the certificate was not issued by the given
                   trusted CA.
 **/
@@ -1774,9 +1775,9 @@ X509VerifyCertChain (
 
   @param[in]      CertChain         One or more ASN.1 DER-encoded X.509 certificates
                                     where the first certificate is signed by the Root
-                                    Certificate or is the Root Cerificate itself. and
-                                    subsequent cerificate is signed by the preceding
-                                    cerificate.
+                                    Certificate or is the Root Certificate itself. and
+                                    subsequent certificate is signed by the preceding
+                                    certificate.
   @param[in]      CertChainLength   Total length of the certificate chain, in bytes.
 
   @param[in]      CertIndex         Index of certificate.
@@ -1888,18 +1889,20 @@ Asn1GetTag (
   IN     UINT32   Tag
   )
 {
-  UINT8  *PtrOld;
-  INT32  ObjTag;
-  INT32  ObjCls;
-  long   ObjLength;
+  UINT8   *PtrOld;
+  INT32   ObjTag;
+  INT32   ObjCls;
+  long    ObjLength;
+  UINT32  Inf;
 
   //
   // Save Ptr position
   //
   PtrOld = *Ptr;
 
-  ASN1_get_object ((CONST UINT8 **)Ptr, &ObjLength, &ObjTag, &ObjCls, (INT32)(End - (*Ptr)));
-  if ((ObjTag == (INT32)(Tag & CRYPTO_ASN1_TAG_VALUE_MASK)) &&
+  Inf = ASN1_get_object ((CONST UINT8 **)Ptr, &ObjLength, &ObjTag, &ObjCls, (INT32)(End - (*Ptr)));
+  if (((Inf & 0x80) == 0x00) &&
+      (ObjTag == (INT32)(Tag & CRYPTO_ASN1_TAG_VALUE_MASK)) &&
       (ObjCls == (INT32)(Tag & CRYPTO_ASN1_TAG_CLASS_MASK)))
   {
     *Length = (UINTN)ObjLength;
@@ -1919,7 +1922,7 @@ Asn1GetTag (
   @param[in]      Cert                     Pointer to the DER-encoded X509 certificate.
   @param[in]      CertSize                 size of the X509 certificate in bytes.
   @param[out]     BasicConstraints         basic constraints bytes.
-  @param[in, out] BasicConstraintsSize     basic constraints buffer sizs in bytes.
+  @param[in, out] BasicConstraintsSize     basic constraints buffer size in bytes.
 
   @retval TRUE                     The basic constraints retrieve successfully.
   @retval FALSE                    If cert is NULL.

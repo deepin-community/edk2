@@ -378,12 +378,17 @@ AdjustPoolHeadA (
   Get the page base address according to pool head address.
 
   @param[in]  Memory    Head address of pool to free.
+  @param[in]  NoPages   Number of pages actually allocated.
+  @param[in]  Size      Size of memory requested.
+                        (plus pool head/tail overhead)
 
   @return Address of pool head.
 **/
 VOID *
 AdjustPoolHeadF (
-  IN EFI_PHYSICAL_ADDRESS  Memory
+  IN EFI_PHYSICAL_ADDRESS  Memory,
+  IN UINTN                 NoPages,
+  IN UINTN                 Size
   );
 
 /**
@@ -463,5 +468,19 @@ PromoteGuardedFreePages (
   );
 
 extern BOOLEAN  mOnGuarding;
+
+//
+// The heap guard system does not support non-EFI_PAGE_SIZE alignments.
+// Architectures that require larger RUNTIME_PAGE_ALLOCATION_GRANULARITY
+// cannot have EfiRuntimeServicesCode, EfiRuntimeServicesData, EfiReservedMemoryType,
+// and EfiACPIMemoryNVS guarded. OSes do not map guard pages anyway, so this is a
+// minimal loss. Not guarding prevents alignment mismatches
+//
+STATIC_ASSERT (
+  RUNTIME_PAGE_ALLOCATION_GRANULARITY == EFI_PAGE_SIZE ||
+  (((FixedPcdGet64 (PcdHeapGuardPageType) & 0x461) == 0) &&
+   ((FixedPcdGet64 (PcdHeapGuardPoolType) & 0x461) == 0)),
+  "Unsupported Heap Guard configuration on system with greater than EFI_PAGE_SIZE RUNTIME_PAGE_ALLOCATION_GRANULARITY"
+  );
 
 #endif
