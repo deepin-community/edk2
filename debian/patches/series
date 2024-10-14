@@ -18,3 +18,12 @@ mbedtls-disable.diff
 0012-OvmfPkg-IoMmuDxe-Add-CsvIoMmu-protocol.patch
 0013-OvmfPkg-Use-classic-mmio-window-for-CSV-guest.patch
 0014-OvmfPkg-IoMmuDxe-Implement-SetAttribute-of-CsvIoMmu.patch
+0015-OvmfPkg-BaseMemEncryptLib-Detect-SEV-live-migration-.patch
+0016-OvmfPkg-BaseMemEncryptLib-Hypercall-API-for-page-enc.patch
+0017-OvmfPkg-BaseMemEncryptLib-Invoke-page-encryption-sta.patch
+0018-OvmfPkg-VmgExitLib-Encryption-state-change-hypercall.patch
+0019-OvmfPkg-PlatformPei-Mark-SEC-GHCB-page-as-unencrypte.patch
+0020-OvmfPkg-AmdSevDxe-Add-support-for-SEV-live-migration.patch
+0021-OvmfPkg-BaseMemcryptSevLib-Correct-the-calculation-o.patch
+0022-OvmfPkg-BaseMemEncryptLib-Return-SUCCESS-if-not-supp.patch
+0023-OvmfPkg-BaseMemEncryptLib-Save-memory-encrypt-status.patch

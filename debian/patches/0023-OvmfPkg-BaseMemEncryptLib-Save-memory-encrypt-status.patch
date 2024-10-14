@@ -1,0 +1,161 @@
+From b634a4e92904546b96b5159e0bf095c7fca2d3ab Mon Sep 17 00:00:00 2001
+From: Xin Jiang <jiangxin@hygon.cn>
+Date: Wed, 10 Jan 2024 17:34:57 +0800
+Subject: [PATCH 9/9] OvmfPkg/BaseMemEncryptLib: Save memory encrypt status in
+ reserved memory
+
+The MMIO routine of VC handler will get memory encrypt status to
+validate MMIO address. MemEncryptSevGetEncryptionMask() will enable
+interrupt while interrupt must be disabled during VC.
+
+During DXE stage, VC routine as below:
+CcExitHandleVc->MemEncryptSevGetAddressRangeState->
+MemEncryptSevGetEncryptionMask->PcdGet64(PcdPteMemoryEncryptionAddressOrMask)
+
+Unfortunately, PcdGet64() will enable interrupt in VC context.
+
+Signed-off-by: Xin Jiang <jiangxin@hygon.cn>
+---
+ OvmfPkg/AmdSev/AmdSevX64.fdf                             | 5 ++++-
+ .../Library/BaseMemEncryptSevLib/DxeMemEncryptSevLib.inf | 4 ++++
+ .../BaseMemEncryptSevLib/DxeMemEncryptSevLibInternal.c   | 9 ++-------
+ OvmfPkg/OvmfPkg.dec                                      | 4 ++++
+ OvmfPkg/OvmfPkgX64.fdf                                   | 5 ++++-
+ OvmfPkg/PlatformPei/AmdSev.c                             | 2 ++
+ OvmfPkg/PlatformPei/Csv.c                                | 6 ++++++
+ OvmfPkg/PlatformPei/PlatformPei.inf                      | 2 ++
+ 8 files changed, 28 insertions(+), 9 deletions(-)
+
+diff --git a/OvmfPkg/AmdSev/AmdSevX64.fdf b/OvmfPkg/AmdSev/AmdSevX64.fdf
+index 6eb9d087..24f69204 100644
+--- a/OvmfPkg/AmdSev/AmdSevX64.fdf
++++ b/OvmfPkg/AmdSev/AmdSevX64.fdf
+@@ -83,7 +83,10 @@ gUefiOvmfPkgTokenSpaceGuid.PcdOvmfSecApicPageTableBase|gUefiOvmfPkgTokenSpaceGui
+ 0x012000|0x002000
+ gUefiOvmfPkgTokenSpaceGuid.PcdCsvDefaultSecureCallBase|gUefiOvmfPkgTokenSpaceGuid.PcdCsvDefaultSecureCallSize
+ 
+-0x014000|0x00C000
++0x014000|0x001000
++gUefiOvmfPkgTokenSpaceGuid.PcdMemEncrpytStatusBase|gUefiOvmfPkgTokenSpaceGuid.PcdMemEncrpytStatusSize
++
++0x015000|0x00B000
+ gUefiOvmfPkgTokenSpaceGuid.PcdOvmfSecPeiTempRamBase|gUefiOvmfPkgTokenSpaceGuid.PcdOvmfSecPeiTempRamSize
+ 
+ 0x020000|0x0E0000
+diff --git a/OvmfPkg/Library/BaseMemEncryptSevLib/DxeMemEncryptSevLib.inf b/OvmfPkg/Library/BaseMemEncryptSevLib/DxeMemEncryptSevLib.inf
+index 2ad0c7ee..ebe13eb6 100644
+--- a/OvmfPkg/Library/BaseMemEncryptSevLib/DxeMemEncryptSevLib.inf
++++ b/OvmfPkg/Library/BaseMemEncryptSevLib/DxeMemEncryptSevLib.inf
+@@ -62,3 +62,7 @@
+ [Pcd]
+   gEfiMdeModulePkgTokenSpaceGuid.PcdPteMemoryEncryptionAddressOrMask
+   gEfiMdePkgTokenSpaceGuid.PcdConfidentialComputingGuestAttr
++
++[FixedPcd]
++  gUefiOvmfPkgTokenSpaceGuid.PcdMemEncrpytStatusBase
++  gUefiOvmfPkgTokenSpaceGuid.PcdMemEncrpytStatusSize
+diff --git a/OvmfPkg/Library/BaseMemEncryptSevLib/DxeMemEncryptSevLibInternal.c b/OvmfPkg/Library/BaseMemEncryptSevLib/DxeMemEncryptSevLibInternal.c
+index b2a68bae..e8879f10 100644
+--- a/OvmfPkg/Library/BaseMemEncryptSevLib/DxeMemEncryptSevLibInternal.c
++++ b/OvmfPkg/Library/BaseMemEncryptSevLib/DxeMemEncryptSevLibInternal.c
+@@ -22,8 +22,6 @@
+ 
+ STATIC UINT64   mCurrentAttr                   = 0;
+ STATIC BOOLEAN  mCurrentAttrRead               = FALSE;
+-STATIC UINT64   mSevEncryptionMask             = 0;
+-STATIC BOOLEAN  mSevEncryptionMaskSaved        = FALSE;
+ STATIC BOOLEAN  mSevLiveMigrationStatus        = FALSE;
+ STATIC BOOLEAN  mSevLiveMigrationStatusChecked = FALSE;
+ 
+@@ -199,12 +197,9 @@ MemEncryptSevGetEncryptionMask (
+   VOID
+   )
+ {
+-  if (!mSevEncryptionMaskSaved) {
+-    mSevEncryptionMask      = PcdGet64 (PcdPteMemoryEncryptionAddressOrMask);
+-    mSevEncryptionMaskSaved = TRUE;
+-  }
++  UINT64 *MemEncryptStatus = (UINT64 *)(UINT64)FixedPcdGet32 (PcdMemEncrpytStatusBase);
+ 
+-  return mSevEncryptionMask;
++  return *MemEncryptStatus;
+ }
+ 
+ /**
+diff --git a/OvmfPkg/OvmfPkg.dec b/OvmfPkg/OvmfPkg.dec
+index 199bf76d..c8120132 100644
+--- a/OvmfPkg/OvmfPkg.dec
++++ b/OvmfPkg/OvmfPkg.dec
+@@ -363,6 +363,10 @@
+   gUefiOvmfPkgTokenSpaceGuid.PcdCsvDefaultSecureCallBase|0|UINT32|0x76
+   gUefiOvmfPkgTokenSpaceGuid.PcdCsvDefaultSecureCallSize|0|UINT32|0x77
+ 
++  ## the base address of memory encryption status.
++  gUefiOvmfPkgTokenSpaceGuid.PcdMemEncrpytStatusBase|0|UINT32|0x78
++  gUefiOvmfPkgTokenSpaceGuid.PcdMemEncrpytStatusSize|0|UINT32|0x79
++
+ [PcdsDynamic, PcdsDynamicEx]
+   gUefiOvmfPkgTokenSpaceGuid.PcdEmuVariableEvent|0|UINT64|2
+   gUefiOvmfPkgTokenSpaceGuid.PcdOvmfFlashVariablesEnable|FALSE|BOOLEAN|0x10
+diff --git a/OvmfPkg/OvmfPkgX64.fdf b/OvmfPkg/OvmfPkgX64.fdf
+index b1702c42..04d3aded 100644
+--- a/OvmfPkg/OvmfPkgX64.fdf
++++ b/OvmfPkg/OvmfPkgX64.fdf
+@@ -103,7 +103,10 @@ gUefiOvmfPkgTokenSpaceGuid.PcdOvmfSecApicPageTableBase|gUefiOvmfPkgTokenSpaceGui
+ 0x011000|0x002000
+ gUefiOvmfPkgTokenSpaceGuid.PcdCsvDefaultSecureCallBase|gUefiOvmfPkgTokenSpaceGuid.PcdCsvDefaultSecureCallSize
+ 
+-0x013000|0x00D000
++0x013000|0x001000
++gUefiOvmfPkgTokenSpaceGuid.PcdMemEncrpytStatusBase|gUefiOvmfPkgTokenSpaceGuid.PcdMemEncrpytStatusSize
++
++0x014000|0x00C000
+ gUefiOvmfPkgTokenSpaceGuid.PcdOvmfSecPeiTempRamBase|gUefiOvmfPkgTokenSpaceGuid.PcdOvmfSecPeiTempRamSize
+ 
+ 0x020000|0x0E0000
+diff --git a/OvmfPkg/PlatformPei/AmdSev.c b/OvmfPkg/PlatformPei/AmdSev.c
+index 30e8a012..94dd14b5 100644
+--- a/OvmfPkg/PlatformPei/AmdSev.c
++++ b/OvmfPkg/PlatformPei/AmdSev.c
+@@ -470,6 +470,8 @@ AmdSevInitialize (
+   PcdStatus      = PcdSet64S (PcdPteMemoryEncryptionAddressOrMask, EncryptionMask);
+   ASSERT_RETURN_ERROR (PcdStatus);
+ 
++  *(UINT64 *)(UINT64)FixedPcdGet32 (PcdMemEncrpytStatusBase) = EncryptionMask;
++
+   DEBUG ((DEBUG_INFO, "SEV is enabled (mask 0x%lx)\n", EncryptionMask));
+ 
+   //
+diff --git a/OvmfPkg/PlatformPei/Csv.c b/OvmfPkg/PlatformPei/Csv.c
+index 5ab83312..71e4b9f7 100644
+--- a/OvmfPkg/PlatformPei/Csv.c
++++ b/OvmfPkg/PlatformPei/Csv.c
+@@ -33,6 +33,12 @@ CsvInitializeMemInfo (
+   UINT64                      LowerMemorySize;
+   UINT64                      UpperMemorySize;
+ 
++  BuildMemoryAllocationHob (
++    (EFI_PHYSICAL_ADDRESS)(UINTN) FixedPcdGet32 (PcdMemEncrpytStatusBase),
++    (UINT64)(UINTN) FixedPcdGet32 (PcdMemEncrpytStatusSize),
++    EfiReservedMemoryType
++    );
++
+   if (!CsvIsEnabled ()) {
+     return ;
+   }
+diff --git a/OvmfPkg/PlatformPei/PlatformPei.inf b/OvmfPkg/PlatformPei/PlatformPei.inf
+index 75a1b9e4..57a353e5 100644
+--- a/OvmfPkg/PlatformPei/PlatformPei.inf
++++ b/OvmfPkg/PlatformPei/PlatformPei.inf
+@@ -143,6 +143,8 @@
+   gUefiOvmfPkgTokenSpaceGuid.PcdOvmfSnpSecretsSize
+   gUefiOvmfPkgTokenSpaceGuid.PcdCsvDefaultSecureCallBase
+   gUefiOvmfPkgTokenSpaceGuid.PcdCsvDefaultSecureCallSize
++  gUefiOvmfPkgTokenSpaceGuid.PcdMemEncrpytStatusBase
++  gUefiOvmfPkgTokenSpaceGuid.PcdMemEncrpytStatusSize
+ 
+ [FeaturePcd]
+   gUefiOvmfPkgTokenSpaceGuid.PcdSmmSmramRequire
+-- 
+2.25.1
+

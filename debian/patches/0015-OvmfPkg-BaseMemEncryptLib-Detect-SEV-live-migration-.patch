@@ -1,0 +1,330 @@
+From bcc36056f955538e01e9c2a8940cecbbb877ad64 Mon Sep 17 00:00:00 2001
+From: Ashish Kalra <ashish.kalra@amd.com>
+Date: Tue, 5 Apr 2022 16:09:28 +0000
+Subject: [PATCH 1/9] OvmfPkg/BaseMemEncryptLib: Detect SEV live migration
+ feature.
+
+cherry-picked from https://patchew.org/EDK2/cover.1629380011.git.ashish.kalra@amd.com .
+
+Add support to check if we are running inside KVM HVM and
+KVM HVM supports SEV Live Migration feature.
+
+Cc: Jordan Justen <jordan.l.justen@intel.com>
+Cc: Ard Biesheuvel <ard.biesheuvel@arm.com>
+Signed-off-by: Ashish Kalra <ashish.kalra@amd.com>
+---
+ OvmfPkg/Include/Library/MemEncryptSevLib.h    | 12 ++++
+ .../DxeMemEncryptSevLibInternal.c             | 49 ++++++++++++++--
+ .../PeiDxeMemEncryptSevLibInternal.c          | 58 +++++++++++++++++++
+ .../PeiDxeMemEncryptSevLibInternal.h          | 31 ++++++++++
+ .../PeiMemEncryptSevLibInternal.c             | 42 ++++++++++++++
+ .../SecMemEncryptSevLibInternal.c             | 18 ++++++
+ 6 files changed, 206 insertions(+), 4 deletions(-)
+ create mode 100644 OvmfPkg/Library/BaseMemEncryptSevLib/PeiDxeMemEncryptSevLibInternal.h
+
+diff --git a/OvmfPkg/Include/Library/MemEncryptSevLib.h b/OvmfPkg/Include/Library/MemEncryptSevLib.h
+index c5653539..dac87256 100644
+--- a/OvmfPkg/Include/Library/MemEncryptSevLib.h
++++ b/OvmfPkg/Include/Library/MemEncryptSevLib.h
+@@ -83,6 +83,18 @@ MemEncryptSevIsEnabled (
+   VOID
+   );
+ 
++/**
++  Returns a boolean to indicate whether SEV live migration is enabled.
++
++  @retval TRUE           SEV live migration is enabled
++  @retval FALSE          SEV live migration is not enabled
++**/
++BOOLEAN
++EFIAPI
++MemEncryptSevLiveMigrationIsEnabled (
++  VOID
++  );
++
+ /**
+   This function clears memory encryption bit for the memory region specified by
+   BaseAddress and NumPages from the current page table context.
+diff --git a/OvmfPkg/Library/BaseMemEncryptSevLib/DxeMemEncryptSevLibInternal.c b/OvmfPkg/Library/BaseMemEncryptSevLib/DxeMemEncryptSevLibInternal.c
+index 9947d663..b2a68bae 100644
+--- a/OvmfPkg/Library/BaseMemEncryptSevLib/DxeMemEncryptSevLibInternal.c
++++ b/OvmfPkg/Library/BaseMemEncryptSevLib/DxeMemEncryptSevLibInternal.c
+@@ -18,10 +18,14 @@
+ #include <Uefi/UefiBaseType.h>
+ #include <ConfidentialComputingGuestAttr.h>
+ 
+-STATIC UINT64   mCurrentAttr            = 0;
+-STATIC BOOLEAN  mCurrentAttrRead        = FALSE;
+-STATIC UINT64   mSevEncryptionMask      = 0;
+-STATIC BOOLEAN  mSevEncryptionMaskSaved = FALSE;
++#include "PeiDxeMemEncryptSevLibInternal.h"
++
++STATIC UINT64   mCurrentAttr                   = 0;
++STATIC BOOLEAN  mCurrentAttrRead               = FALSE;
++STATIC UINT64   mSevEncryptionMask             = 0;
++STATIC BOOLEAN  mSevEncryptionMaskSaved        = FALSE;
++STATIC BOOLEAN  mSevLiveMigrationStatus        = FALSE;
++STATIC BOOLEAN  mSevLiveMigrationStatusChecked = FALSE;
+ 
+ /**
+   The function check if the specified Attr is set.
+@@ -117,6 +121,24 @@ MemEncryptSevSnpIsEnabled (
+   return ConfidentialComputingGuestHas (CCAttrAmdSevSnp);
+ }
+ 
++/**
++  Figures out if we are running inside KVM HVM and
++  KVM HVM supports SEV Live Migration feature.
++**/
++STATIC
++VOID
++EFIAPI
++InternalDetectSevLiveMigrationFeature (
++  VOID
++  )
++{
++  if (KvmDetectSevLiveMigrationFeature ()) {
++    mSevLiveMigrationStatus = TRUE;
++  }
++
++  mSevLiveMigrationStatusChecked = TRUE;
++}
++
+ /**
+   Returns a boolean to indicate whether SEV-ES is enabled.
+ 
+@@ -147,6 +169,25 @@ MemEncryptSevIsEnabled (
+   return ConfidentialComputingGuestHas (CCAttrAmdSev);
+ }
+ 
++/**
++  Returns a boolean to indicate whether SEV live migration is enabled.
++
++  @retval TRUE           SEV live migration is enabled
++  @retval FALSE          SEV live migration is not enabled
++**/
++BOOLEAN
++EFIAPI
++MemEncryptSevLiveMigrationIsEnabled (
++  VOID
++  )
++{
++  if (!mSevLiveMigrationStatusChecked) {
++    InternalDetectSevLiveMigrationFeature ();
++  }
++
++  return mSevLiveMigrationStatus;
++}
++
+ /**
+   Returns the SEV encryption mask.
+ 
+diff --git a/OvmfPkg/Library/BaseMemEncryptSevLib/PeiDxeMemEncryptSevLibInternal.c b/OvmfPkg/Library/BaseMemEncryptSevLib/PeiDxeMemEncryptSevLibInternal.c
+index 43a2a3e3..30e1d8d0 100644
+--- a/OvmfPkg/Library/BaseMemEncryptSevLib/PeiDxeMemEncryptSevLibInternal.c
++++ b/OvmfPkg/Library/BaseMemEncryptSevLib/PeiDxeMemEncryptSevLibInternal.c
+@@ -16,6 +16,8 @@
+ #include <Register/SmramSaveStateMap.h>
+ #include <Uefi/UefiBaseType.h>
+ 
++#include "PeiDxeMemEncryptSevLibInternal.h"
++
+ /**
+   Locate the page range that covers the initial (pre-SMBASE-relocation) SMRAM
+   Save State Map.
+@@ -61,3 +63,59 @@ MemEncryptSevLocateInitialSmramSaveStateMapPages (
+ 
+   return RETURN_SUCCESS;
+ }
++
++/**
++  Figures out if we are running inside KVM HVM and
++  KVM HVM supports SEV Live Migration feature.
++
++  @retval TRUE           SEV live migration is supported.
++  @retval FALSE          SEV live migration is not supported.
++**/
++BOOLEAN
++EFIAPI
++KvmDetectSevLiveMigrationFeature (
++  VOID
++  )
++{
++  CHAR8   Signature[13];
++  UINT32  mKvmLeaf;
++  UINT32  RegEax;
++  UINT32  RegEbx;
++  UINT32  RegEcx;
++  UINT32  RegEdx;
++
++  Signature[12] = '\0';
++  for (mKvmLeaf = 0x40000000; mKvmLeaf < 0x40010000; mKvmLeaf += 0x100) {
++    AsmCpuid (
++      mKvmLeaf,
++      NULL,
++      (UINT32 *)&Signature[0],
++      (UINT32 *)&Signature[4],
++      (UINT32 *)&Signature[8]
++      );
++
++    if (AsciiStrCmp (Signature, "KVMKVMKVM") == 0) {
++      DEBUG ((
++        DEBUG_INFO,
++        "%a: KVM Detected, signature = %a\n",
++        __FUNCTION__,
++        Signature
++        ));
++
++      RegEax = mKvmLeaf + 1;
++      RegEcx = 0;
++      AsmCpuid (mKvmLeaf + 1, &RegEax, &RegEbx, &RegEcx, &RegEdx);
++      if ((RegEax & KVM_FEATURE_MIGRATION_CONTROL) != 0) {
++        DEBUG ((
++          DEBUG_INFO,
++          "%a: SEV Live Migration feature supported\n",
++          __FUNCTION__
++          ));
++
++        return TRUE;
++      }
++    }
++  }
++
++  return FALSE;
++}
+diff --git a/OvmfPkg/Library/BaseMemEncryptSevLib/PeiDxeMemEncryptSevLibInternal.h b/OvmfPkg/Library/BaseMemEncryptSevLib/PeiDxeMemEncryptSevLibInternal.h
+new file mode 100644
+index 00000000..b0ef053c
+--- /dev/null
++++ b/OvmfPkg/Library/BaseMemEncryptSevLib/PeiDxeMemEncryptSevLibInternal.h
+@@ -0,0 +1,31 @@
++/** @file
++
++  Secure Encrypted Virtualization (SEV) library helper function
++
++  Copyright (c) 2021, AMD Incorporated. All rights reserved.<BR>
++
++  SPDX-License-Identifier: BSD-2-Clause-Patent
++
++**/
++
++#ifndef PEI_DXE_MEM_ENCRYPT_SEV_LIB_INTERNAL_H_
++#define PEI_DXE_MEM_ENCRYPT_SEV_LIB_INTERNAL_H_
++
++#include <Library/BaseLib.h>
++
++#define KVM_FEATURE_MIGRATION_CONTROL  BIT17
++
++/**
++  Figures out if we are running inside KVM HVM and
++  KVM HVM supports SEV Live Migration feature.
++
++  @retval TRUE           SEV live migration is supported.
++  @retval FALSE          SEV live migration is not supported.
++**/
++BOOLEAN
++EFIAPI
++KvmDetectSevLiveMigrationFeature (
++  VOID
++  );
++
++#endif // PEI_DXE_MEM_ENCRYPT_SEV_LIB_INTERNAL_H_
+diff --git a/OvmfPkg/Library/BaseMemEncryptSevLib/PeiMemEncryptSevLibInternal.c b/OvmfPkg/Library/BaseMemEncryptSevLib/PeiMemEncryptSevLibInternal.c
+index f381b925..b20ffc11 100644
+--- a/OvmfPkg/Library/BaseMemEncryptSevLib/PeiMemEncryptSevLibInternal.c
++++ b/OvmfPkg/Library/BaseMemEncryptSevLib/PeiMemEncryptSevLibInternal.c
+@@ -17,6 +17,11 @@
+ #include <Register/Cpuid.h>
+ #include <Uefi/UefiBaseType.h>
+ 
++#include "PeiDxeMemEncryptSevLibInternal.h"
++
++STATIC BOOLEAN  mSevLiveMigrationStatus        = FALSE;
++STATIC BOOLEAN  mSevLiveMigrationStatusChecked = FALSE;
++
+ /**
+    Read the workarea to determine whether SEV is enabled. If enabled,
+    then return the SevEsWorkArea pointer.
+@@ -83,6 +88,24 @@ MemEncryptSevSnpIsEnabled (
+   return Msr.Bits.SevSnpBit ? TRUE : FALSE;
+ }
+ 
++/**
++  Figures out if we are running inside KVM HVM and
++  KVM HVM supports SEV Live Migration feature.
++**/
++STATIC
++VOID
++EFIAPI
++InternalDetectSevLiveMigrationFeature (
++  VOID
++  )
++{
++  if (KvmDetectSevLiveMigrationFeature ()) {
++    mSevLiveMigrationStatus = TRUE;
++  }
++
++  mSevLiveMigrationStatusChecked = TRUE;
++}
++
+ /**
+   Returns a boolean to indicate whether SEV-ES is enabled.
+ 
+@@ -121,6 +144,25 @@ MemEncryptSevIsEnabled (
+   return Msr.Bits.SevBit ? TRUE : FALSE;
+ }
+ 
++/**
++  Returns a boolean to indicate whether SEV live migration is enabled.
++
++  @retval TRUE           SEV live migration is enabled
++  @retval FALSE          SEV live migration is not enabled
++**/
++BOOLEAN
++EFIAPI
++MemEncryptSevLiveMigrationIsEnabled (
++  VOID
++  )
++{
++  if (!mSevLiveMigrationStatusChecked) {
++    InternalDetectSevLiveMigrationFeature ();
++  }
++
++  return mSevLiveMigrationStatus;
++}
++
+ /**
+   Returns the SEV encryption mask.
+ 
+diff --git a/OvmfPkg/Library/BaseMemEncryptSevLib/SecMemEncryptSevLibInternal.c b/OvmfPkg/Library/BaseMemEncryptSevLib/SecMemEncryptSevLibInternal.c
+index 946bed2a..0e5faa1b 100644
+--- a/OvmfPkg/Library/BaseMemEncryptSevLib/SecMemEncryptSevLibInternal.c
++++ b/OvmfPkg/Library/BaseMemEncryptSevLib/SecMemEncryptSevLibInternal.c
+@@ -121,6 +121,24 @@ MemEncryptSevIsEnabled (
+   return Msr.Bits.SevBit ? TRUE : FALSE;
+ }
+ 
++/**
++  Returns a boolean to indicate whether SEV live migration is enabled.
++
++  @retval TRUE           SEV live migration is enabled
++  @retval FALSE          SEV live migration is not enabled
++**/
++BOOLEAN
++EFIAPI
++MemEncryptSevLiveMigrationIsEnabled (
++  VOID
++  )
++{
++  //
++  // Not used in SEC phase.
++  //
++  return FALSE;
++}
++
+ /**
+   Returns the SEV encryption mask.
+ 
+-- 
+2.25.1
+
