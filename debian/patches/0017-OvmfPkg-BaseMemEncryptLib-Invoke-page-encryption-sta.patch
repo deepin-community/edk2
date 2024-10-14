@@ -1,0 +1,84 @@
+From 76259c7b4db5506784a41a64aacba61acec2f945 Mon Sep 17 00:00:00 2001
+From: Ashish Kalra <ashish.kalra@amd.com>
+Date: Tue, 5 Apr 2022 16:26:02 +0000
+Subject: [PATCH 3/9] OvmfPkg/BaseMemEncryptLib: Invoke page encryption state
+ change hypercall
+
+cherry-picked from https://patchew.org/EDK2/cover.1629380011.git.ashish.kalra@amd.com .
+
+Invoke the hypercall API to notify hypervisor when the page's
+encryption state changes.
+
+Cc: Jordan Justen <jordan.l.justen@intel.com>
+Cc: Ard Biesheuvel <ard.biesheuvel@arm.com>
+Signed-off-by: Brijesh Singh <brijesh.singh@amd.com>
+Signed-off-by: Ashish Kalra <ashish.kalra@amd.com>
+---
+ .../X64/PeiDxeVirtualMemory.c                    | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/OvmfPkg/Library/BaseMemEncryptSevLib/X64/PeiDxeVirtualMemory.c b/OvmfPkg/Library/BaseMemEncryptSevLib/X64/PeiDxeVirtualMemory.c
+index 3edea897..c52e80ba 100644
+--- a/OvmfPkg/Library/BaseMemEncryptSevLib/X64/PeiDxeVirtualMemory.c
++++ b/OvmfPkg/Library/BaseMemEncryptSevLib/X64/PeiDxeVirtualMemory.c
+@@ -729,6 +729,7 @@ SetMemoryEncDec (
+   UINT64                          PgTableMask;
+   UINT64                          AddressEncMask;
+   BOOLEAN                         IsWpEnabled;
++  BOOLEAN                         CBitChanged;
+   UINTN                           OrigLength;
+   RETURN_STATUS                   Status;
+   PHYSICAL_ADDRESS                PageAddress;
+@@ -814,6 +815,7 @@ SetMemoryEncDec (
+   // Save the specified length and physical address (we need it later).
+   //
+   OrigLength          = Length;
++  CBitChanged         = FALSE;
+   OrigPhysicalAddress = PhysicalAddress;
+ 
+   while (Length != 0) {
+@@ -874,6 +876,7 @@ SetMemoryEncDec (
+           ));
+         PhysicalAddress += BIT30;
+         Length          -= BIT30;
++        CBitChanged      = TRUE;
+       } else {
+         //
+         // We must split the page
+@@ -929,6 +932,7 @@ SetMemoryEncDec (
+           SetOrClearCBit (&PageDirectory2MEntry->Uint64, Mode);
+           PhysicalAddress += BIT21;
+           Length          -= BIT21;
++          CBitChanged      = TRUE;
+         } else {
+           //
+           // We must split up this page into 4K pages
+@@ -972,6 +976,7 @@ SetMemoryEncDec (
+         SetOrClearCBit (&PageTableEntry->Uint64, Mode);
+         PhysicalAddress += EFI_PAGE_SIZE;
+         Length          -= EFI_PAGE_SIZE;
++        CBitChanged      = TRUE;
+       }
+     }
+   }
+@@ -1011,6 +1016,17 @@ SetMemoryEncDec (
+       );
+   }
+ 
++  //
++  // Notify Hypervisor on C-bit status
++  //
++  if (CBitChanged) {
++    Status = SetMemoryEncDecHypercall3 (
++               OrigPhysicalAddress,
++               EFI_SIZE_TO_PAGES (OrigLength),
++               (Mode == SetCBit) ? TRUE : FALSE
++               );
++  }
++
+ Done:
+   //
+   // Restore page table write protection, if any.
+-- 
+2.25.1
+

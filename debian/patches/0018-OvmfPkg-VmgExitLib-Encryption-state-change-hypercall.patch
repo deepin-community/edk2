@@ -1,0 +1,47 @@
+From 4e69934f54c0f93ad758196f650057c5a6750bed Mon Sep 17 00:00:00 2001
+From: Ashish Kalra <ashish.kalra@amd.com>
+Date: Tue, 5 Apr 2022 16:27:26 +0000
+Subject: [PATCH 4/9] OvmfPkg/VmgExitLib: Encryption state change hypercall
+ support in VC handler
+
+cherry-picked from https://patchew.org/EDK2/cover.1629380011.git.ashish.kalra@amd.com .
+
+Make the #VC handler aware of the page encryption state
+change hypercall by adding support to check KVM_HC_MAP_GPA_RANGE
+hypercall and add the additional register values used by
+hypercall in the GHCB.
+
+Cc: Jordan Justen <jordan.l.justen@intel.com>
+Cc: Ard Biesheuvel <ard.biesheuvel@arm.com>
+Signed-off-by: Ashish Kalra <ashish.kalra@amd.com>
+---
+ OvmfPkg/Library/CcExitLib/CcExitVcHandler.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/OvmfPkg/Library/CcExitLib/CcExitVcHandler.c b/OvmfPkg/Library/CcExitLib/CcExitVcHandler.c
+index 2031fa9e..681b7e20 100644
+--- a/OvmfPkg/Library/CcExitLib/CcExitVcHandler.c
++++ b/OvmfPkg/Library/CcExitLib/CcExitVcHandler.c
+@@ -662,6 +662,19 @@ VmmCallExit (
+   Ghcb->SaveArea.Cpl = (UINT8)(Regs->Cs & 0x3);
+   CcExitVmgSetOffsetValid (Ghcb, GhcbCpl);
+ 
++  if (Regs->Rax == KVM_HC_MAP_GPA_RANGE) {
++    //
++    // KVM_HC_MAP_GPA_RANGE hypercall requires these
++    // extra registers.
++    //
++    Ghcb->SaveArea.Rbx = Regs->Rbx;
++    CcExitVmgSetOffsetValid (Ghcb, GhcbRbx);
++    Ghcb->SaveArea.Rcx = Regs->Rcx;
++    CcExitVmgSetOffsetValid (Ghcb, GhcbRcx);
++    Ghcb->SaveArea.Rdx = Regs->Rdx;
++    CcExitVmgSetOffsetValid (Ghcb, GhcbRdx);
++  }
++
+   Status = CcExitVmgExit (Ghcb, SVM_EXIT_VMMCALL, 0, 0);
+   if (Status != 0) {
+     return Status;
+-- 
+2.25.1
+

@@ -1,0 +1,196 @@
+From 2dc6d0b2bfaa55b4959652bb9320279bc67b8ef1 Mon Sep 17 00:00:00 2001
+From: Ashish Kalra <ashish.kalra@amd.com>
+Date: Tue, 5 Apr 2022 16:40:03 +0000
+Subject: [PATCH 6/9] OvmfPkg/AmdSevDxe: Add support for SEV live migration.
+
+cherry-picked from https://patchew.org/EDK2/cover.1629380011.git.ashish.kalra@amd.com .
+
+Check for SEV live migration feature support, if detected
+setup a new UEFI enviroment variable to indicate OVMF
+support for SEV live migration.
+
+This environment variable is created by UEFI but consumed
+by the (guest) linux kernel. This is actually part of a
+3-way negotiation of the live migration feature between
+hypervisor, guest OVMF and guest kernel. Host indicates
+support for live migration, which is detected by OVMF
+and correspondingly OVMF sets this SetLiveMigrationEnabled
+UEFI variable, which is read by the guest kernel and it
+indicates to the guest kernel that both host and OVMF
+support and have enabled the live migration feature.
+
+The new runtime UEFI environment variable is set via the
+notification function registered for the
+EFI_END_OF_DXE_EVENT_GROUP_GUID event in AmdSevDxe driver.
+
+AmdSevDxe module is an apriori driver so it gets loaded between PEI
+and DXE phases and the SetVariable call will fail at the driver's
+entry point as the Variable DXE module is still not loaded yet.
+So we need to wait for an event notification which is signaled
+after the Variable DXE module is loaded, hence, using the
+EndOfDxe event notification to make this call.
+
+Signed-off-by: Ashish Kalra <ashish.kalra@amd.com>
+---
+ OvmfPkg/AmdSevDxe/AmdSevDxe.c              | 67 ++++++++++++++++++++++
+ OvmfPkg/AmdSevDxe/AmdSevDxe.inf            |  4 ++
+ OvmfPkg/Include/Guid/AmdSevMemEncryptLib.h | 20 +++++++
+ OvmfPkg/OvmfPkg.dec                        |  1 +
+ 4 files changed, 92 insertions(+)
+ create mode 100644 OvmfPkg/Include/Guid/AmdSevMemEncryptLib.h
+
+diff --git a/OvmfPkg/AmdSevDxe/AmdSevDxe.c b/OvmfPkg/AmdSevDxe/AmdSevDxe.c
+index d497a343..1fa4e69a 100644
+--- a/OvmfPkg/AmdSevDxe/AmdSevDxe.c
++++ b/OvmfPkg/AmdSevDxe/AmdSevDxe.c
+@@ -15,10 +15,13 @@
+ #include <Library/BaseMemoryLib.h>
+ #include <Library/DebugLib.h>
+ #include <Library/DxeServicesTableLib.h>
++#include <Library/UefiRuntimeServicesTableLib.h>
+ #include <Library/MemEncryptSevLib.h>
+ #include <Library/MemoryAllocationLib.h>
+ #include <Library/UefiBootServicesTableLib.h>
+ #include <Guid/ConfidentialComputingSevSnpBlob.h>
++#include <Guid/AmdSevMemEncryptLib.h>
++#include <Guid/EventGroup.h>
+ #include <Library/PcdLib.h>
+ #include <Pi/PiDxeCis.h>
+ #include <Protocol/SevMemoryAcceptance.h>
+@@ -191,6 +194,39 @@ STATIC EDKII_MEMORY_ACCEPT_PROTOCOL  mMemoryAcceptProtocol = {
+   AmdSevMemoryAccept
+ };
+ 
++STATIC
++VOID
++EFIAPI
++AmdSevDxeOnEndOfDxe (
++  IN EFI_EVENT  Event,
++  IN VOID       *EventToSignal
++  )
++{
++  EFI_STATUS  Status;
++  BOOLEAN     SevLiveMigrationEnabled;
++
++  SevLiveMigrationEnabled = MemEncryptSevLiveMigrationIsEnabled ();
++
++  if (SevLiveMigrationEnabled) {
++    Status = gRT->SetVariable (
++                    L"SevLiveMigrationEnabled",
++                    &gAmdSevMemEncryptGuid,
++                    EFI_VARIABLE_NON_VOLATILE |
++                    EFI_VARIABLE_BOOTSERVICE_ACCESS |
++                    EFI_VARIABLE_RUNTIME_ACCESS,
++                    sizeof SevLiveMigrationEnabled,
++                    &SevLiveMigrationEnabled
++                    );
++
++    DEBUG ((
++      DEBUG_INFO,
++      "%a: Setting SevLiveMigrationEnabled variable, status = %lx\n",
++      __FUNCTION__,
++      Status
++      ));
++  }
++}
++
+ EFI_STATUS
+ EFIAPI
+ AmdSevDxeEntryPoint (
+@@ -203,6 +239,7 @@ AmdSevDxeEntryPoint (
+   UINTN                                     NumEntries;
+   UINTN                                     Index;
+   CONFIDENTIAL_COMPUTING_SNP_BLOB_LOCATION  *SnpBootDxeTable;
++  EFI_EVENT                                 Event;
+ 
+   //
+   // Do nothing when SEV is not enabled
+@@ -361,5 +398,35 @@ AmdSevDxeEntryPoint (
+                   );
+   }
+ 
++  //
++  // AmdSevDxe module is an apriori driver so it gets loaded between PEI
++  // and DXE phases and the SetVariable call will fail at the driver's
++  // entry point as the Variable DXE module is still not loaded yet.
++  // So we need to wait for an event notification which is signaled
++  // after the Variable DXE module is loaded, hence, using the
++  // EndOfDxe event notification to make this call.
++  //
++  // Register EFI_END_OF_DXE_EVENT_GROUP_GUID event.
++  // The notification function sets the runtime variable indicating OVMF
++  // support for SEV live migration.
++  //
++  Status = gBS->CreateEventEx (
++                  EVT_NOTIFY_SIGNAL,
++                  TPL_CALLBACK,
++                  AmdSevDxeOnEndOfDxe,
++                  NULL,
++                  &gEfiEndOfDxeEventGroupGuid,
++                  &Event
++                  );
++
++  if (EFI_ERROR (Status)) {
++    DEBUG ((
++      DEBUG_ERROR,
++      "%a: CreateEventEx(): %r\n",
++      __FUNCTION__,
++      Status
++      ));
++  }
++
+   return EFI_SUCCESS;
+ }
+diff --git a/OvmfPkg/AmdSevDxe/AmdSevDxe.inf b/OvmfPkg/AmdSevDxe/AmdSevDxe.inf
+index e7c7d526..dd1da527 100644
+--- a/OvmfPkg/AmdSevDxe/AmdSevDxe.inf
++++ b/OvmfPkg/AmdSevDxe/AmdSevDxe.inf
+@@ -57,3 +57,7 @@
+ 
+ [Pcd]
+   gUefiOvmfPkgTokenSpaceGuid.PcdOvmfHostBridgePciDevId
++
++[Guids]
++  gAmdSevMemEncryptGuid
++  gEfiEndOfDxeEventGroupGuid         ## CONSUMES   ## Event
+diff --git a/OvmfPkg/Include/Guid/AmdSevMemEncryptLib.h b/OvmfPkg/Include/Guid/AmdSevMemEncryptLib.h
+new file mode 100644
+index 00000000..62d22e79
+--- /dev/null
++++ b/OvmfPkg/Include/Guid/AmdSevMemEncryptLib.h
+@@ -0,0 +1,20 @@
++/** @file
++
++  AMD Memory Encryption GUID, define a new GUID for defining
++  new UEFI environment variables assocaiated with SEV Memory Encryption.
++
++  Copyright (c) 2021, AMD Inc. All rights reserved.<BR>
++
++  SPDX-License-Identifier: BSD-2-Clause-Patent
++
++**/
++
++#ifndef __AMD_SEV_MEMENCRYPT_LIB_H__
++#define __AMD_SEV_MEMENCRYPT_LIB_H__
++
++#define AMD_SEV_MEMENCRYPT_GUID \
++{0x0cf29b71, 0x9e51, 0x433a, {0xa3, 0xb7, 0x81, 0xf3, 0xab, 0x16, 0xb8, 0x75}}
++
++extern EFI_GUID  gAmdSevMemEncryptGuid;
++
++#endif
+diff --git a/OvmfPkg/OvmfPkg.dec b/OvmfPkg/OvmfPkg.dec
+index e7dc7a67..199bf76d 100644
+--- a/OvmfPkg/OvmfPkg.dec
++++ b/OvmfPkg/OvmfPkg.dec
+@@ -177,6 +177,7 @@
+   gOvmfVariableGuid                     = {0x50bea1e5, 0xa2c5, 0x46e9, {0x9b, 0x3a, 0x59, 0x59, 0x65, 0x16, 0xb0, 0x0a}}
+   gQemuFirmwareResourceHobGuid          = {0x3cc47b04, 0x0d3e, 0xaa64, {0x06, 0xa6, 0x4b, 0xdc, 0x9a, 0x2c, 0x61, 0x19}}
+   gRtcRegisterBaseAddressHobGuid        = {0x40435d97, 0xeb37, 0x4a4b, {0x7f, 0xad, 0xb7, 0xed, 0x72, 0xa1, 0x43, 0xc5}}
++  gAmdSevMemEncryptGuid                 = {0x0cf29b71, 0x9e51, 0x433a, {0xa3, 0xb7, 0x81, 0xf3, 0xab, 0x16, 0xb8, 0x75}}
+ 
+ [Ppis]
+   # PPI whose presence in the PPI database signals that the TPM base address
+-- 
+2.25.1
+

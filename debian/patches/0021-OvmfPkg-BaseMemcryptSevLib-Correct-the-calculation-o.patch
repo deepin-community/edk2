@@ -1,0 +1,35 @@
+From 00d3b16367bbfd393c309bd3b42d6ca680419ff2 Mon Sep 17 00:00:00 2001
+From: hanliyang <hanliyang@hygon.cn>
+Date: Mon, 17 Jan 2022 01:19:21 -0500
+Subject: [PATCH 7/9] OvmfPkg/BaseMemcryptSevLib: Correct the calculation of
+ page range that notified to hypervisor
+
+Correct the calculation of page range that notified to hypervisor.
+
+Signed-off-by: hanliyang <hanliyang@hygon.cn>
+---
+ .../Library/BaseMemEncryptSevLib/X64/PeiDxeVirtualMemory.c  | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/OvmfPkg/Library/BaseMemEncryptSevLib/X64/PeiDxeVirtualMemory.c b/OvmfPkg/Library/BaseMemEncryptSevLib/X64/PeiDxeVirtualMemory.c
+index c52e80ba..555218bd 100644
+--- a/OvmfPkg/Library/BaseMemEncryptSevLib/X64/PeiDxeVirtualMemory.c
++++ b/OvmfPkg/Library/BaseMemEncryptSevLib/X64/PeiDxeVirtualMemory.c
+@@ -1020,9 +1020,13 @@ SetMemoryEncDec (
+   // Notify Hypervisor on C-bit status
+   //
+   if (CBitChanged) {
++    UINTN StartPfn = OrigPhysicalAddress >> EFI_PAGE_SHIFT;
++    UINTN EndPfn = (OrigPhysicalAddress + OrigLength +
++                    ((1 << EFI_PAGE_SHIFT) - 1)) >> EFI_PAGE_SHIFT;
++
+     Status = SetMemoryEncDecHypercall3 (
+                OrigPhysicalAddress,
+-               EFI_SIZE_TO_PAGES (OrigLength),
++               (EndPfn - StartPfn),
+                (Mode == SetCBit) ? TRUE : FALSE
+                );
+   }
+-- 
+2.25.1
+

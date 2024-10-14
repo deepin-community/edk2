@@ -1,0 +1,301 @@
+From 1cf6687d535122afd57410375f2ce2de0d4b1f0f Mon Sep 17 00:00:00 2001
+From: Ashish Kalra <ashish.kalra@amd.com>
+Date: Tue, 5 Apr 2022 16:23:53 +0000
+Subject: [PATCH 2/9] OvmfPkg/BaseMemEncryptLib: Hypercall API for page
+ encryption state change
+
+cherry-picked from https://patchew.org/EDK2/cover.1629380011.git.ashish.kalra@amd.com .
+
+Add API to issue hypercall on page encryption state change.
+
+By default all the SEV guest memory regions are considered encrypted,
+if a guest changes the encryption attribute of the page (e.g mark a
+page as decrypted) then notify hypervisor. Hypervisor will need to
+track the unencrypted pages. The information will be used during
+guest live migration, guest page migration and guest debugging.
+
+This hypercall is used to notify hypervisor when the page's
+encryption state changes.
+
+Cc: Jordan Justen <jordan.l.justen@intel.com>
+Cc: Ard Biesheuvel <ard.biesheuvel@arm.com>
+Signed-off-by: Brijesh Singh <brijesh.singh@amd.com>
+Signed-off-by: Ashish Kalra <ashish.kalra@amd.com>
+---
+ OvmfPkg/Include/Library/MemEncryptSevLib.h    | 52 +++++++++++++++
+ .../DxeMemEncryptSevLib.inf                   |  1 +
+ .../Ia32/MemEncryptSevLib.c                   | 27 ++++++++
+ .../PeiMemEncryptSevLib.inf                   |  1 +
+ .../SecMemEncryptSevLibInternal.c             | 20 ++++++
+ .../X64/AsmHelperStub.nasm                    | 33 ++++++++++
+ .../X64/MemEncryptSevLib.c                    | 66 +++++++++++++++++++
+ 7 files changed, 200 insertions(+)
+ create mode 100644 OvmfPkg/Library/BaseMemEncryptSevLib/X64/AsmHelperStub.nasm
+
+diff --git a/OvmfPkg/Include/Library/MemEncryptSevLib.h b/OvmfPkg/Include/Library/MemEncryptSevLib.h
+index dac87256..5d2841cc 100644
+--- a/OvmfPkg/Include/Library/MemEncryptSevLib.h
++++ b/OvmfPkg/Include/Library/MemEncryptSevLib.h
+@@ -252,4 +252,56 @@ MemEncryptSevSnpPreValidateSystemRam (
+   IN UINTN             NumPages
+   );
+ 
++/**
++ This hypercall is used to notify hypervisor when the page's encryption
++ state changes.
++
++ @param[in]   PhysicalAddress       The physical address that is the start address
++                                    of a memory region.
++ @param[in]   Pages                 Number of pages in memory region.
++ @param[in]   IsEncrypted           Encrypted or Decrypted.
++
++ @retval RETURN_SUCCESS             Hypercall returned success.
++ @retval RETURN_UNSUPPORTED         Hypercall not supported.
++ @retval RETURN_NO_MAPPING          Hypercall returned error.
++**/
++RETURN_STATUS
++EFIAPI
++SetMemoryEncDecHypercall3 (
++  IN  UINTN    PhysicalAddress,
++  IN  UINTN    Pages,
++  IN  BOOLEAN  IsEncrypted
++  );
++
++#define KVM_HC_MAP_GPA_RANGE          12
++#define KVM_MAP_GPA_RANGE_PAGE_SZ_4K  0
++#define KVM_MAP_GPA_RANGE_PAGE_SZ_2M  BIT0
++#define KVM_MAP_GPA_RANGE_PAGE_SZ_1G  BIT1
++#define KVM_MAP_GPA_RANGE_ENC_STATE(n)  ((n) << 4)
++#define KVM_MAP_GPA_RANGE_ENCRYPTED  KVM_MAP_GPA_RANGE_ENC_STATE(1)
++#define KVM_MAP_GPA_RANGE_DECRYPTED  KVM_MAP_GPA_RANGE_ENC_STATE(0)
++
++/**
++ Interface exposed by the ASM implementation of the core hypercall
++
++ @param[in]   HypercallNum          KVM_HC_MAP_GPA_RANGE hypercall.
++ @param[in]   PhysicalAddress       The physical address that is the start address
++                                    of a memory region.
++ @param[in]   Pages                 Number of pages in memory region.
++ @param[in]   Attributes            Bits 3:0 - preferred page size encoding,
++                                    0 = 4kb, 1 = 2mb, 2 = 1gb, etc...
++                                    Bit  4 - plaintext = 0, encrypted = 1
++                                    Bits 63:5 - reserved (must be zero)
++
++  @retval Hypercall returned status.
++**/
++UINTN
++EFIAPI
++SetMemoryEncDecHypercall3AsmStub (
++  IN  UINTN  HypercallNum,
++  IN  UINTN  PhysicalAddress,
++  IN  UINTN  Pages,
++  IN  UINTN  Attributes
++  );
++
+ #endif // _MEM_ENCRYPT_SEV_LIB_H_
+diff --git a/OvmfPkg/Library/BaseMemEncryptSevLib/DxeMemEncryptSevLib.inf b/OvmfPkg/Library/BaseMemEncryptSevLib/DxeMemEncryptSevLib.inf
+index 823e5d9d..2ad0c7ee 100644
+--- a/OvmfPkg/Library/BaseMemEncryptSevLib/DxeMemEncryptSevLib.inf
++++ b/OvmfPkg/Library/BaseMemEncryptSevLib/DxeMemEncryptSevLib.inf
+@@ -40,6 +40,7 @@
+   X64/SnpPageStateChangeInternal.c
+   X64/VirtualMemory.c
+   X64/VirtualMemory.h
++  X64/AsmHelperStub.nasm
+ 
+ [Sources.IA32]
+   Ia32/MemEncryptSevLib.c
+diff --git a/OvmfPkg/Library/BaseMemEncryptSevLib/Ia32/MemEncryptSevLib.c b/OvmfPkg/Library/BaseMemEncryptSevLib/Ia32/MemEncryptSevLib.c
+index f92299fc..c1c10a61 100644
+--- a/OvmfPkg/Library/BaseMemEncryptSevLib/Ia32/MemEncryptSevLib.c
++++ b/OvmfPkg/Library/BaseMemEncryptSevLib/Ia32/MemEncryptSevLib.c
+@@ -153,3 +153,30 @@ MemEncryptSevSnpPreValidateSystemRam (
+ {
+   ASSERT (FALSE);
+ }
++
++/**
++ This hyercall is used to notify hypervisor when the page's encryption
++ state changes.
++
++ @param[in]   PhysicalAddress       The physical address that is the start address
++                                    of a memory region.
++ @param[in]   Pages                 Number of Pages in the memory region.
++ @param[in]   IsEncrypted           Encrypted or Decrypted.
++
++ @retval RETURN_SUCCESS             Hypercall returned success.
++ @retval RETURN_UNSUPPORTED         Hypercall not supported.
++ @retval RETURN_NO_MAPPING          Hypercall returned error.
++**/
++RETURN_STATUS
++EFIAPI
++SetMemoryEncDecHypercall3 (
++  IN  UINTN    PhysicalAddress,
++  IN  UINTN    Pages,
++  IN  BOOLEAN  IsEncrypted
++  )
++{
++  //
++  // Memory encryption bit is not accessible in 32-bit mode
++  //
++  return RETURN_UNSUPPORTED;
++}
+diff --git a/OvmfPkg/Library/BaseMemEncryptSevLib/PeiMemEncryptSevLib.inf b/OvmfPkg/Library/BaseMemEncryptSevLib/PeiMemEncryptSevLib.inf
+index 1e0b5600..7479161a 100644
+--- a/OvmfPkg/Library/BaseMemEncryptSevLib/PeiMemEncryptSevLib.inf
++++ b/OvmfPkg/Library/BaseMemEncryptSevLib/PeiMemEncryptSevLib.inf
+@@ -40,6 +40,7 @@
+   X64/SnpPageStateChangeInternal.c
+   X64/VirtualMemory.c
+   X64/VirtualMemory.h
++  X64/AsmHelperStub.nasm
+ 
+ [Sources.IA32]
+   Ia32/MemEncryptSevLib.c
+diff --git a/OvmfPkg/Library/BaseMemEncryptSevLib/SecMemEncryptSevLibInternal.c b/OvmfPkg/Library/BaseMemEncryptSevLib/SecMemEncryptSevLibInternal.c
+index 0e5faa1b..2d7a256a 100644
+--- a/OvmfPkg/Library/BaseMemEncryptSevLib/SecMemEncryptSevLibInternal.c
++++ b/OvmfPkg/Library/BaseMemEncryptSevLib/SecMemEncryptSevLibInternal.c
+@@ -139,6 +139,26 @@ MemEncryptSevLiveMigrationIsEnabled (
+   return FALSE;
+ }
+ 
++/**
++  Interface exposed by the ASM implementation of the core hypercall
++
++  @retval Hypercall returned status.
++**/
++UINTN
++EFIAPI
++SetMemoryEncDecHypercall3AsmStub (
++  IN  UINTN  HypercallNum,
++  IN  UINTN  PhysicalAddress,
++  IN  UINTN  Pages,
++  IN  UINTN  Attributes
++  )
++{
++  //
++  // Not used in SEC phase.
++  //
++  return RETURN_UNSUPPORTED;
++}
++
+ /**
+   Returns the SEV encryption mask.
+ 
+diff --git a/OvmfPkg/Library/BaseMemEncryptSevLib/X64/AsmHelperStub.nasm b/OvmfPkg/Library/BaseMemEncryptSevLib/X64/AsmHelperStub.nasm
+new file mode 100644
+index 00000000..0ec35dd9
+--- /dev/null
++++ b/OvmfPkg/Library/BaseMemEncryptSevLib/X64/AsmHelperStub.nasm
+@@ -0,0 +1,33 @@
++/** @file
++
++  ASM helper stub to invoke hypercall
++
++  Copyright (c) 2021, AMD Incorporated. All rights reserved.<BR>
++
++  SPDX-License-Identifier: BSD-2-Clause-Patent
++
++**/
++
++DEFAULT REL
++SECTION .text
++
++; UINTN
++; EFIAPI
++; SetMemoryEncDecHypercall3AsmStub (
++;   IN UINTN HypercallNum,
++;   IN UINTN Arg1,
++;   IN UINTN Arg2,
++;   IN UINTN Arg3
++;   );
++global ASM_PFX(SetMemoryEncDecHypercall3AsmStub)
++ASM_PFX(SetMemoryEncDecHypercall3AsmStub):
++  ; UEFI calling conventions require RBX to
++  ; be nonvolatile/callee-saved.
++  push rbx
++  mov rax, rcx    ; Copy HypercallNumber to rax
++  mov rbx, rdx    ; Copy Arg1 to the register expected by KVM
++  mov rcx, r8     ; Copy Arg2 to register expected by KVM
++  mov rdx, r9     ; Copy Arg3 to register expected by KVM
++  vmmcall         ; Call VMMCALL
++  pop rbx
++  ret
+diff --git a/OvmfPkg/Library/BaseMemEncryptSevLib/X64/MemEncryptSevLib.c b/OvmfPkg/Library/BaseMemEncryptSevLib/X64/MemEncryptSevLib.c
+index e7c703bb..a64ff2a5 100644
+--- a/OvmfPkg/Library/BaseMemEncryptSevLib/X64/MemEncryptSevLib.c
++++ b/OvmfPkg/Library/BaseMemEncryptSevLib/X64/MemEncryptSevLib.c
+@@ -142,3 +142,69 @@ MemEncryptSevClearMmioPageEncMask (
+            EFI_PAGES_TO_SIZE (NumPages)
+            );
+ }
++
++/**
++ This hyercall is used to notify hypervisor when the page's encryption
++ state changes.
++
++ @param[in]   PhysicalAddress       The physical address that is the start address
++                                    of a memory region.
++ @param[in]   Pages                 Number of Pages in the memory region.
++ @param[in]   IsEncrypted           Encrypted or Decrypted.
++
++ @retval RETURN_SUCCESS             Hypercall returned success.
++ @retval RETURN_UNSUPPORTED         Hypercall not supported.
++ @retval RETURN_NO_MAPPING          Hypercall returned error.
++**/
++RETURN_STATUS
++EFIAPI
++SetMemoryEncDecHypercall3 (
++  IN  UINTN    PhysicalAddress,
++  IN  UINTN    Pages,
++  IN  BOOLEAN  IsEncrypted
++  )
++{
++  RETURN_STATUS  Ret;
++  UINTN          Error;
++  UINTN          EncryptState;
++
++  Ret = RETURN_UNSUPPORTED;
++
++  if (MemEncryptSevLiveMigrationIsEnabled ()) {
++    Ret = RETURN_SUCCESS;
++    //
++    // The encryption bit is set/clear on the smallest page size, hence
++    // use the 4k page size in MAP_GPA_RANGE hypercall below.
++    //
++    // Also, when the GCD map is being walked and the c-bit being cleared
++    // from MMIO and NonExistent memory spaces, the physical address
++    // range being passed may not be page-aligned and adding an assert
++    // here prevents booting. Hence, rounding it down when calling
++    // SetMemoryEncDecHypercall3AsmStub below.
++    //
++
++    EncryptState = IsEncrypted ? KVM_MAP_GPA_RANGE_ENCRYPTED :
++                   KVM_MAP_GPA_RANGE_DECRYPTED;
++
++    Error = SetMemoryEncDecHypercall3AsmStub (
++              KVM_HC_MAP_GPA_RANGE,
++              PhysicalAddress & ~EFI_PAGE_MASK,
++              Pages,
++              KVM_MAP_GPA_RANGE_PAGE_SZ_4K | EncryptState
++              );
++
++    if (Error != 0) {
++      DEBUG ((
++        DEBUG_ERROR,
++        "SetMemoryEncDecHypercall3 failed, Phys = %x, Pages = %d, Err = %Ld\n",
++        PhysicalAddress,
++        Pages,
++        (INT64)Error
++        ));
++
++      Ret = RETURN_NO_MAPPING;
++    }
++  }
++
++  return Ret;
++}
+-- 
+2.25.1
+

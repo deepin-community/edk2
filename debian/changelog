@@ -1,17 +1,32 @@
+edk2 (2024.08-2deepin2) unstable; urgency=medium
+
+  * Support live migration for Hygon CSV/CSV2/CSV3 guest, fix nesting #VC:
+    - d/p/0015-OvmfPkg-BaseMemEncryptLib-Detect-SEV-live-migration-.patch
+    - d/p/0016-OvmfPkg-BaseMemEncryptLib-Hypercall-API-for-page-enc.patch
+    - d/p/0017-OvmfPkg-BaseMemEncryptLib-Invoke-page-encryption-sta.patch
+    - d/p/0018-OvmfPkg-VmgExitLib-Encryption-state-change-hypercall.patch
+    - d/p/0019-OvmfPkg-PlatformPei-Mark-SEC-GHCB-page-as-unencrypte.patch
+    - d/p/0020-OvmfPkg-AmdSevDxe-Add-support-for-SEV-live-migration.patch
+    - d/p/0021-OvmfPkg-BaseMemcryptSevLib-Correct-the-calculation-o.patch
+    - d/p/0022-OvmfPkg-BaseMemEncryptLib-Return-SUCCESS-if-not-supp.patch
+    - d/p/0023-OvmfPkg-BaseMemEncryptLib-Save-memory-encrypt-status.patch
+
+ -- hanliyang <hanliyang@hygon.cn>  Mon, 14 Oct 2024 15:34:28 +0000
+
 edk2 (2024.08-2deepin1) unstable; urgency=medium
 
- * Add support for Hygon CSV3 feature:
-   - d/p/0004-MdePkg-Add-StandardSignatureIsHygonGenuine-in-BaseCp.patch
-   - d/p/0005-UefiCpuPkg-LocalApicLib-Exclude-second-SendIpi-seque.patch
-   - d/p/0006-OvmfPkg-Add-CSV-secure-call-library-on-Hygon-CPU.patch
-   - d/p/0007-OvmfPkg-ResetVector-Support-CSV-in-ResetVector-phase.patch
-   - d/p/0008-OvmfPkg-PlatformPei-Initialize-CSV-VM-s-memory.patch
-   - d/p/0009-OvmfPkg-BaseMemcryptSevLib-update-page-status-to-Sec.patch
-   - d/p/0010-OvmfPkg-Tcg-Add-CsvLib-for-TpmMmioSevDecryptPei.patch
-   - d/p/0011-OvmfPkg-Add-CsvDxe-driver.patch
-   - d/p/0012-OvmfPkg-IoMmuDxe-Add-CsvIoMmu-protocol.patch
-   - d/p/0013-OvmfPkg-Use-classic-mmio-window-for-CSV-guest.patch
-   - d/p/0014-OvmfPkg-IoMmuDxe-Implement-SetAttribute-of-CsvIoMmu.patch
+  * Add support for Hygon CSV3 feature:
+    - d/p/0004-MdePkg-Add-StandardSignatureIsHygonGenuine-in-BaseCp.patch
+    - d/p/0005-UefiCpuPkg-LocalApicLib-Exclude-second-SendIpi-seque.patch
+    - d/p/0006-OvmfPkg-Add-CSV-secure-call-library-on-Hygon-CPU.patch
+    - d/p/0007-OvmfPkg-ResetVector-Support-CSV-in-ResetVector-phase.patch
+    - d/p/0008-OvmfPkg-PlatformPei-Initialize-CSV-VM-s-memory.patch
+    - d/p/0009-OvmfPkg-BaseMemcryptSevLib-update-page-status-to-Sec.patch
+    - d/p/0010-OvmfPkg-Tcg-Add-CsvLib-for-TpmMmioSevDecryptPei.patch
+    - d/p/0011-OvmfPkg-Add-CsvDxe-driver.patch
+    - d/p/0012-OvmfPkg-IoMmuDxe-Add-CsvIoMmu-protocol.patch
+    - d/p/0013-OvmfPkg-Use-classic-mmio-window-for-CSV-guest.patch
+    - d/p/0014-OvmfPkg-IoMmuDxe-Implement-SetAttribute-of-CsvIoMmu.patch
 
  -- hanliyang <hanliyang@hygon.cn>  Wed, 09 Oct 2024 21:26:28 +0000
 

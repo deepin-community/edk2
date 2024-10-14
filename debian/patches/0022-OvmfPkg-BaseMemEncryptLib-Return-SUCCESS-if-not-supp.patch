@@ -1,0 +1,36 @@
+From f8dd12a5b0a32b6bdcf0d056a640cfd3a3ffcdbb Mon Sep 17 00:00:00 2001
+From: hanliyang <hanliyang@hygon.cn>
+Date: Sun, 19 Jun 2022 18:12:35 +0800
+Subject: [PATCH 8/9] OvmfPkg/BaseMemEncryptLib: Return SUCCESS if not support
+ SEV live migration
+
+Add this change to avoid trigger 'ASSERT_EFI_ERROR (Status = Unsupported)'
+when QEMU doesn't support SEV live migration.
+
+Signed-off-by: hanliyang <hanliyang@hygon.cn>
+---
+ OvmfPkg/Library/BaseMemEncryptSevLib/X64/MemEncryptSevLib.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/OvmfPkg/Library/BaseMemEncryptSevLib/X64/MemEncryptSevLib.c b/OvmfPkg/Library/BaseMemEncryptSevLib/X64/MemEncryptSevLib.c
+index a64ff2a5..7b29582d 100644
+--- a/OvmfPkg/Library/BaseMemEncryptSevLib/X64/MemEncryptSevLib.c
++++ b/OvmfPkg/Library/BaseMemEncryptSevLib/X64/MemEncryptSevLib.c
+@@ -168,10 +168,12 @@ SetMemoryEncDecHypercall3 (
+   UINTN          Error;
+   UINTN          EncryptState;
+ 
+-  Ret = RETURN_UNSUPPORTED;
++  //
++  // Return success if not support migration.
++  //
++  Ret = RETURN_SUCCESS;
+ 
+   if (MemEncryptSevLiveMigrationIsEnabled ()) {
+-    Ret = RETURN_SUCCESS;
+     //
+     // The encryption bit is set/clear on the smallest page size, hence
+     // use the 4k page size in MAP_GPA_RANGE hypercall below.
+-- 
+2.25.1
+
