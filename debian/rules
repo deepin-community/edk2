@@ -70,10 +70,13 @@ debian/setup-build-stamp:
 OVMF_INSTALL_DIR = debian/ovmf-install
 OVMF64_BUILD_ROOT = Build/OvmfX64
 OVMF64_BUILD_DIR = $(OVMF64_BUILD_ROOT)/$(BUILD_TYPE)_$(EDK2_TOOLCHAIN)
+OVMF64_BUILD_ROOT_CSV = Build/AmdSev
+OVMF64_BUILD_DIR_CSV = $(OVMF64_BUILD_ROOT_CSV)/$(BUILD_TYPE)_$(EDK2_TOOLCHAIN)
 OVMF_ENROLL = $(OVMF_INSTALL_DIR)/EnrollDefaultKeys.efi
 OVMF_SHELL =  $(OVMF_INSTALL_DIR)/Shell.efi
 OVMF_BINARIES = $(OVMF_ENROLL) $(OVMF_SHELL)
 OVMF_IMAGES := $(addprefix $(OVMF_INSTALL_DIR)/,OVMF_CODE_4M.fd OVMF_CODE_4M.secboot.fd OVMF_VARS_4M.fd)
+OVMF_IMAGES_CSV := $(addprefix $(OVMF_INSTALL_DIR)/,OVMF.CSV.fd)
 OVMF_PREENROLLED_VARS := $(addprefix $(OVMF_INSTALL_DIR)/,OVMF_VARS_4M.ms.fd OVMF_VARS_4M.snakeoil.fd)
 
 OVMF32_INSTALL_DIR = debian/ovmf32-install
@@ -153,6 +156,17 @@ $(OVMF_BINARIES) $(OVMF_IMAGES): debian/setup-build-stamp
 		$(OVMF_INSTALL_DIR)/
 	cp $(OVMF64_BUILD_DIR)/FV/OVMF_CODE.fd \
 		$(OVMF_INSTALL_DIR)/OVMF_CODE_4M.secboot.fd
+
+build-ovmf-csv: build-ovmf $(OVMF_IMAGES_CSV)
+$(OVMF_IMAGES_CSV): debian/setup-build-stamp
+	rm -f OvmfPkg/AmdSev/Grub/grub.efi
+	set -e; . ./edksetup.sh; \
+		build -a X64 \
+			-t $(EDK2_TOOLCHAIN) \
+			-p OvmfPkg/AmdSev/AmdSevX64.dsc \
+			$(OVMF_COMMON_FLAGS) -b $(BUILD_TYPE)
+	cp $(OVMF64_BUILD_DIR_CSV)/FV/OVMF.fd \
+		$(OVMF_INSTALL_DIR)/OVMF.CSV.fd
 
 ifeq ($(call dpkg_vendor_derives_from_v1,ubuntu),yes)
 debian/PkKek-1-vendor.pem: debian/PkKek-1-Ubuntu.pem
@@ -321,4 +335,4 @@ get-orig-source:
 		edk2-$(DEB_VERSION_UPSTREAM)
 	rm -rf edk2.tmp edk2-$(DEB_VERSION_UPSTREAM)
 
-.PHONY: build-ovmf build-ovmf32 build-qemu-efi build-qemu-efi-aarch64 build-qemu-efi-arm build-qemu-efi-riscv64
+.PHONY: build-ovmf build-ovmf32 build-qemu-efi build-qemu-efi-aarch64 build-qemu-efi-arm build-qemu-efi-riscv64 build-ovmf-csv
