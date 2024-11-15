@@ -1,0 +1,124 @@
+From f9b0b115f437a8e5705945f733485f752f924259 Mon Sep 17 00:00:00 2001
+From: hanliyang <hanliyang@hygon.cn>
+Date: Fri, 2 Aug 2024 02:06:58 +0800
+Subject: [PATCH] OvmfPkg/AmdSev: Support full-disk encryption based on Grub
+ efisecret mod
+
+When we place grub FV package into OVMF.fd to support full-disk
+encryption, we need provide grub components as the build env.
+
+===
+Prerequisite:
+
+1. If the grub in your system has already support efisecret module, then
+you should run cmds as follows to support build OVMF.fd.
+  $ cd /usr
+  $ sudo tar --transform='s/^/grub\// -zcf grub.tar.gz lib/grub/
+  $ sudo mv grub.tar.gz /opt
+  $ cd /opt/
+  $ sudo tar -xzf grub.tar.gz
+
+2. If the grub in your system does not support efisecret module, then we
+can clone the grub repository and checkout to commit 578c95298 ("
+kern: Add lockdown support"), and backport the following patch series:
+  https://lists.gnu.org/archive/html/grub-devel/2020-12/msg00257.html
+  https://lists.gnu.org/archive/html/grub-devel/2020-12/msg00258.html
+  https://lists.gnu.org/archive/html/grub-devel/2020-12/msg00259.html
+  https://lists.gnu.org/archive/html/grub-devel/2020-12/msg00260.html
+After we have prepared for the grub codes, we should build it and
+install the grub components to /opt/grub. The steps is shown as below:
+  $ ./bootstrap
+  $ ./autogen.sh
+  $ ./configure --target=x86_64 --with-platform=efi -prefix=/grub
+  $ make -j$(getconf _NPROCESSORS_ONLN)
+  $ sudo make install DESTDIR=/opt/
+  $ cd /opt/
+  $ sudo tar -zcf grub.tar.gz grub
+
+Note: the grub.tar.gz metioned above will be used when enabling
+full-disk encryption in the guest.
+
+===
+Build OVMF.fd:
+
+When we build the OVMF.fd which support full-disk encryption, we should
+delete stale grub.efi in the source tree:
+  $ rm OvmfPkg/AmdSev/Grub/grub.efi
+And specify the dsc file:
+  $ OvmfPkg/build.sh ... -a X64 -p OvmfPkg/AmdSev/AmdSevX64.dsc ...
+
+Signed-off-by: hanliyang <hanliyang@hygon.cn>
+---
+ OvmfPkg/AmdSev/Grub/grub.cfg | 22 +++++++++++++++-------
+ OvmfPkg/AmdSev/Grub/grub.sh  |  4 ++--
+ 2 files changed, 17 insertions(+), 9 deletions(-)
+
+diff --git a/OvmfPkg/AmdSev/Grub/grub.cfg b/OvmfPkg/AmdSev/Grub/grub.cfg
+index 17be9427..93eea0b4 100644
+--- a/OvmfPkg/AmdSev/Grub/grub.cfg
++++ b/OvmfPkg/AmdSev/Grub/grub.cfg
+@@ -10,16 +10,12 @@
+ ##
+ 
+ echo "Entering grub config"
+-sevsecret
++cryptomount -s efisecret
+ if [ $? -ne 0 ]; then
+     echo "Failed to locate anything in the SEV secret area, prompting for password"
++    echo "OR"
++    echo "Failed to mount root securely, retrying with password prompt"
+     cryptomount -a
+-else
+-    cryptomount -s
+-    if [ $? -ne 0 ]; then
+-        echo "Failed to mount root securely, retrying with password prompt"
+-        cryptomount -a
+-    fi
+ fi
+ set root=
+ for f in (crypto*); do
+@@ -27,6 +23,18 @@ for f in (crypto*); do
+         set root=$f
+         set prefix=($root)/boot/grub
+         break;
++    elif [ -e $f/boot/grub2/grub.cfg ]; then
++        set root=$f
++        set prefix=($root)/boot/grub
++        break;
++    elif [ -e $f/grub/grub.cfg ]; then
++        set root=$f
++        set prefix=($root)/grub
++        break;
++    elif [ -e $f/grub2/grub.cfg ]; then
++        set root=$f
++        set prefix=($root)/grub2
++        break;
+     fi
+ done
+ if [ x$root = x ]; then
+diff --git a/OvmfPkg/AmdSev/Grub/grub.sh b/OvmfPkg/AmdSev/Grub/grub.sh
+index 99807d72..c8e57a18 100644
+--- a/OvmfPkg/AmdSev/Grub/grub.sh
++++ b/OvmfPkg/AmdSev/Grub/grub.sh
+@@ -42,9 +42,8 @@ GRUB_MODULES="
+             test
+             regexp
+             linux
+-            linuxefi
+             reboot
+-            sevsecret
++            efisecret
+             "
+ basedir=$(dirname -- "$0")
+ 
+@@ -85,6 +84,7 @@ mcopy -i "${basedir}/disk.fat" -- "${basedir}/grub.cfg" ::grub.cfg
+ ${mkimage} -O x86_64-efi \
+            -p '(crypto0)' \
+            -c "${basedir}/grub-bootstrap.cfg" \
++           -d "/opt/grub/lib/grub/x86_64-efi" \
+            -m "${basedir}/disk.fat" \
+            -o "${basedir}/grub.efi" \
+            ${GRUB_MODULES}
+-- 
+2.25.1
+

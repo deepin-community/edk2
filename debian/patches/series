@@ -27,3 +27,4 @@ mbedtls-disable.diff
 0021-OvmfPkg-BaseMemcryptSevLib-Correct-the-calculation-o.patch
 0022-OvmfPkg-BaseMemEncryptLib-Return-SUCCESS-if-not-supp.patch
 0023-OvmfPkg-BaseMemEncryptLib-Save-memory-encrypt-status.patch
+0024-OvmfPkg-AmdSev-Support-full-disk-encryption-based-on.patch
