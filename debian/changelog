@@ -1,3 +1,10 @@
+edk2 (2024.08-2deepin3) unstable; urgency=medium
+
+  * Support full-disk encryption for Hygon CSV/CSV2/CSV3 guest:
+    - d/p/0024-OvmfPkg-AmdSev-Support-full-disk-encryption-based-on.patch
+
+ -- hanliyang <hanliyang@hygon.cn>  Wed, 20 Oct 2024 17:50:28 +0800
+
 edk2 (2024.08-2deepin2) unstable; urgency=medium
 
   * Support live migration for Hygon CSV/CSV2/CSV3 guest, fix nesting #VC:
