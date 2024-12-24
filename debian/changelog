@@ -1,3 +1,10 @@
+edk2 (2024.08-2deepin4) unstable; urgency=medium
+
+  * Generate OVMF.CSV.fd in build target build-ovmf:
+    - d/p/0025-Change-grub.sh-to-generate-OVMF.CSV.fd-in-build-ovmf.patch
+
+ -- hanliyang <hanliyang@hygon.cn>  Tue, 24 Dec 2024 19:50:28 +0800
+
 edk2 (2024.08-2deepin3) unstable; urgency=medium
 
   * Support full-disk encryption for Hygon CSV/CSV2/CSV3 guest:

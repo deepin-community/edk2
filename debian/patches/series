@@ -28,3 +28,4 @@ mbedtls-disable.diff
 0022-OvmfPkg-BaseMemEncryptLib-Return-SUCCESS-if-not-supp.patch
 0023-OvmfPkg-BaseMemEncryptLib-Save-memory-encrypt-status.patch
 0024-OvmfPkg-AmdSev-Support-full-disk-encryption-based-on.patch
+0025-Change-grub.sh-to-generate-OVMF.CSV.fd-in-build-ovmf.patch
