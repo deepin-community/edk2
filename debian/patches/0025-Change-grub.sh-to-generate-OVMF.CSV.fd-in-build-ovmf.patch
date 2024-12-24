@@ -1,0 +1,25 @@
+From b440c4e43a8089a4ac1f06f807df7c295cc81d5a Mon Sep 17 00:00:00 2001
+From: hanliyang <hanliyang@hygon.cn>
+Date: Tue, 24 Dec 2024 06:32:55 +0000
+Subject: [PATCH] Change grub.sh to generate OVMF.CSV.fd in @build-ovmf@
+
+Signed-off-by: hanliyang <hanliyang@hygon.cn>
+---
+ OvmfPkg/AmdSev/Grub/grub.sh | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/OvmfPkg/AmdSev/Grub/grub.sh b/OvmfPkg/AmdSev/Grub/grub.sh
+index c8e57a18..760a03b8 100644
+--- a/OvmfPkg/AmdSev/Grub/grub.sh
++++ b/OvmfPkg/AmdSev/Grub/grub.sh
+@@ -84,7 +84,6 @@ mcopy -i "${basedir}/disk.fat" -- "${basedir}/grub.cfg" ::grub.cfg
+ ${mkimage} -O x86_64-efi \
+            -p '(crypto0)' \
+            -c "${basedir}/grub-bootstrap.cfg" \
+-           -d "/opt/grub/lib/grub/x86_64-efi" \
+            -m "${basedir}/disk.fat" \
+            -o "${basedir}/grub.efi" \
+            ${GRUB_MODULES}
+-- 
+2.45.2
+
