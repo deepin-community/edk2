@@ -30,6 +30,7 @@ class QemuEfiMachine(enum.Enum):
     AAVMF = enum.auto()
     AAVMF32 = enum.auto()
     RISCV64 = enum.auto()
+    LOONGARCH64 = enum.auto()
 
 
 class QemuEfiVariant(enum.Enum):
@@ -51,6 +52,9 @@ class QemuCommand:
         '-display', 'none',
         '-serial', 'stdio',
     ]
+    LoongArch_Common_Params = Qemu_Common_Params + [
+        '-machine', 'virt',
+    ]
     Ovmf_Common_Params = Qemu_Common_Params + [
         '-chardev', 'pty,id=charserial1',
         '-device', 'isa-serial,chardev=charserial1,id=serial1',
@@ -68,6 +72,9 @@ class QemuCommand:
         QemuEfiMachine.AAVMF32: [
             'qemu-system-aarch64', '-cpu', 'cortex-a15',
         ] + Aavmf_Common_Params,
+        QemuEfiMachine.LOONGARCH64: [
+            'qemu-system-loongarch64',
+        ] + LoongArch_Common_Params,
         QemuEfiMachine.OVMF_PC: [
             'qemu-system-x86_64', '-machine', 'pc,accel=tcg',
         ] + Ovmf_Common_Params,
@@ -115,6 +122,13 @@ class QemuCommand:
             return (
                 '/usr/share/AAVMF/AAVMF32_CODE.fd',
                 '/usr/share/AAVMF/AAVMF32_VARS.fd'
+            )
+        if machine == QemuEfiMachine.LOONGARCH64:
+            assert(variant is None)
+            assert(flash_size == QemuEfiFlashSize.DEFAULT)
+            return (
+                '/usr/share/qemu-efi-loongarch64/QEMU_EFI.fd',
+                '/usr/share/qemu-efi-loongarch64/QEMU_VARS.fd',
             )
         if machine == QemuEfiMachine.RISCV64:
             assert(variant is None)

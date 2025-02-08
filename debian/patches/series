@@ -29,3 +29,6 @@ mbedtls-disable.diff
 0023-OvmfPkg-BaseMemEncryptLib-Save-memory-encrypt-status.patch
 0024-OvmfPkg-AmdSev-Support-full-disk-encryption-based-on.patch
 0025-Change-grub.sh-to-generate-OVMF.CSV.fd-in-build-ovmf.patch
+0001-UefiCpuPkg-Adjust-the-exception-handler-logic-on-Loo.patch
+0002-UefiCpuPkg-Add-dump-interrupt-type-on-LoongArch64.patch
+0003-OvmfPkg-LoongArch-Enabling-some-base-libraries.patch

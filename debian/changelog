@@ -1,3 +1,19 @@
+edk2 (2024.08-2deepin5) unstable; urgency=medium
+
+  * Add loongarch64 support:
+    - Add qemu-efi-loongarch64 package.
+      + qemu-efi-loongarch64/QEMU_EFI.fd
+      + qemu-efi-loongarch64/QEMU_VARS.fd
+      + qemu/firmware/60-edk2-loongarch64.json
+    - Add efi-shell-loongarch64 package.
+      + efi-shell-loongarch64/shellloongarch64.efi
+  * Cherry-pick upstream loongarch64 patches:
+    - d/p/0001-UefiCpuPkg-Adjust-the-exception-handler-logic-on-Loo.patch
+    - d/p/0002-UefiCpuPkg-Add-dump-interrupt-type-on-LoongArch64.patch
+    - d/p/0003-OvmfPkg-LoongArch-Enabling-some-base-libraries.patch
+
+ -- Xiaotian Wu <wuxiaotian@loongson.cn>  Sat, 8 Feb 2025 18:13:46 +0800
+
 edk2 (2024.08-2deepin4) unstable; urgency=medium
 
   * Generate OVMF.CSV.fd in build target build-ovmf:
